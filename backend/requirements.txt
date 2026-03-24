@@ -1,0 +1,60 @@
+# Core Dependencies
+langchain>=0.3.23
+langchain-community>=0.3.0
+
+# LLM & Embedding
+openai>=1.0.0  # vLLM은 OpenAI 호환 API 사용
+langchain-openai>=0.3.0  # LangChain OpenAI integration (for ChatOpenAI)
+sentence-transformers>=2.2.0
+
+# Vector Database
+qdrant-client>=1.7.0
+
+# FastAPI & Server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+websockets>=12.0  # WebSocket for real-time alarm updates
+
+# Database
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
+asyncpg>=0.29.0  # Async PostgreSQL
+sqlalchemy>=2.0.0  # ORM
+
+# Utils
+pyyaml>=6.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+cryptography>=41.0.0  # For credential encryption
+
+# Authentication
+python-jose[cryptography]>=3.3.0  # JWT handling
+passlib[bcrypt]>=1.7.4  # Password hashing
+
+# Kafka
+kafka-python>=2.0.0
+aiokafka>=0.10.0  # Async Kafka client
+
+# HTTP Client
+aiohttp>=3.9.0  # Async HTTP for image download
+
+# Document Processing
+pypdf>=3.17.0
+python-docx>=1.1.0
+markdown>=3.5.0
+
+# Advanced RAG
+rank-bm25>=0.2.2
+
+# PDF Generation
+reportlab>=4.0.0  # PDF report generation
+
+# SSH/Device Control
+paramiko>=3.4.0  # SSH client for device control
+requests>=2.31.0  # REST API calls
+
+# Monitoring
+prometheus-client>=0.19.0  # Metrics
+
+# Optional
+redis>=5.0.0

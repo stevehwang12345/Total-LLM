@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  fluentd:
+    image: fluent/fluentd:v1.16-1
+    container_name: vllm-fluentd
+    user: root
+    ports:
+      - "5140:5140/udp"    # Syslog (보안 장비)
+      - "8888:8888/tcp"    # HTTP (출입 통제)
+      - "24224:24224/tcp"  # Forward (애플리케이션)
+      - "24231:24231/tcp"  # Prometheus metrics
+    volumes:
+      - ./fluent.conf:/fluentd/etc/fluent.conf:ro
+      - ./plugins:/fluentd/plugins:ro
+      - fluentd-log:/var/log/td-agent
+      - /var/log/firewall:/var/log/firewall:ro  # 방화벽 로그 (호스트)
+    environment:
+      - FLUENTD_CONF=fluent.conf
+    restart: unless-stopped
+    networks:
+      - vllm-network
+
+volumes:
+  fluentd-log:
+    driver: local
+
+networks:
+  vllm-network:
+    external: true
+    name: vllm-network

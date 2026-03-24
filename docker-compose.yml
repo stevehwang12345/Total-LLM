@@ -1,0 +1,192 @@
+version: '3.8'
+
+# Total-LLM 통합 Docker Compose
+#
+# 서비스 포트:
+#   - Frontend: 9004 (Nginx)
+#   - Backend: 9002 (FastAPI)
+#   - Qdrant: 6333 (HTTP), 6334 (gRPC)
+#   - Redis: 6379
+#   - vLLM: 9000 (별도 실행)
+
+services:
+  # =============================================================================
+  # Frontend - React UI
+  # =============================================================================
+  frontend:
+    build:
+      context: ./frontend/react-ui
+      dockerfile: Dockerfile
+    container_name: total-llm-frontend
+    ports:
+      - "9004:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - VITE_BACKEND_URL=http://backend:9002
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================================
+  # Backend - FastAPI
+  # =============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: total-llm-backend
+    ports:
+      - "9002:9002"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      # LLM Configuration (vllm-qwen2.5-14b must be connected to total-llm-network)
+      - VLLM_BASE_URL=http://vllm-qwen2.5-14b:9000/v1
+      - LLM_MODEL_NAME=Qwen/Qwen2.5-14B-Instruct-AWQ
+      - LLM_TEMPERATURE=0.7
+      - LLM_MAX_TOKENS=4096
+      # Embedding
+      - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+      # Vector DB
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=documents
+      # Redis (Optional)
+      - REDIS_URL=redis://redis:6379
+      # Vision Model (Local)
+      - VISION_MODEL_ID=Qwen/Qwen2-VL-7B-Instruct
+      - VISION_SIMULATION_MODE=true
+    volumes:
+      - ./backend/config:/app/config:ro
+      - ./data/uploads:/app/data/uploads
+      - ./data/logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트 (서버 제어용)
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # =============================================================================
+  # Qdrant Vector Database
+  # =============================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: total-llm-qdrant
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - ./data/qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__TELEMETRY_DISABLED=true
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # =============================================================================
+  # Redis Cache
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: total-llm-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # =============================================================================
+  # PostgreSQL (Optional - for structured data)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: total-llm-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-total_llm}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-total_llm}
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    profiles:
+      - with-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-total_llm} -d ${POSTGRES_DB:-total_llm}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  total-llm-network:
+    driver: bridge
+    name: total-llm-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  qdrant_storage:
+  redis_data:
+  postgres_data:
+
+# =============================================================================
+# Usage
+# =============================================================================
+# 기본 실행 (Frontend, Backend, Qdrant, Redis):
+#   docker-compose up -d
+#
+# PostgreSQL 포함 실행:
+#   docker-compose --profile with-postgres up -d
+#
+# 빌드 및 실행:
+#   docker-compose up -d --build
+#
+# 로그 확인:
+#   docker-compose logs -f
+#
+# 중지:
+#   docker-compose down
+#
+# 볼륨 포함 삭제:
+#   docker-compose down -v
+#
+# 참고: vLLM은 GPU 자원 관리를 위해 별도로 실행
+#   ./services/vllm/run_vllm.sh

@@ -1,0 +1,185 @@
+# Adaptive RAG Configuration
+
+# LLM Configuration (Text)
+# 환경변수로 오버라이드 가능: LLM_MODEL_NAME, VLLM_BASE_URL
+llm:
+  provider: "vllm"
+  base_url: "http://localhost:9000/v1"  # Docker: vllm-qwen2.5-14b:9000
+  model_name: "Qwen/Qwen2.5-14B-Instruct-AWQ"
+  temperature: 0.7
+  max_tokens: 4096
+  streaming: true
+
+# VLM Configuration (Vision - Multimodal)
+# 환경변수로 오버라이드 가능: VLM_MODEL_NAME, VLM_BASE_URL
+# Dedicated Vision model on port 9001 with Qwen2.5-VL (upgraded from Qwen2-VL)
+vlm:
+  provider: "vllm"
+  base_url: "http://localhost:9001/v1"
+  model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  temperature: 0.7
+  max_tokens: 1024
+
+# Embedding Configuration
+embedding:
+  model_name: "BAAI/bge-small-en-v1.5"  # Lightweight embedding model (384 dimensions)
+  # Note: Originally planned to use "intfloat/multilingual-e5-large" (1024 dim)
+  # but switched to bge-small for better performance and lower resource usage
+  device: "cpu"  # Can change to "cuda" to use GPU 0
+  batch_size: 32  # Number of texts to encode simultaneously
+
+# Qdrant Configuration
+# 환경변수로 오버라이드 가능: QDRANT_HOST, QDRANT_PORT, QDRANT_COLLECTION
+qdrant:
+  host: "localhost"  # Qdrant server host (Docker: qdrant, Local: localhost)
+  port: 6333  # Default Qdrant port
+  collection_name: "documents"  # Vector collection for RAG documents
+  logs_collection_name: "security_logs"  # Separate collection for security logs (분리됨)
+  vector_size: 384  # Must match embedding model dimension (bge-small-en-v1.5)
+  distance: "Cosine"  # Distance metric: Cosine, Dot, Euclid
+
+# Adaptive RAG Configuration
+adaptive:
+  # Complexity thresholds
+  simple_threshold: 0.3    # 0.0-0.3: simple search
+  hybrid_threshold: 0.6    # 0.3-0.6: hybrid search
+  # 0.6-1.0: multi-query search
+
+  # Retrieval parameters
+  simple_k: 3              # Simple search: top 3 docs
+  hybrid_k: 5              # Hybrid search: top 5 docs
+  complex_k: 7             # Complex search: top 7 docs
+
+# Hybrid Search Configuration (BM25 + Vector)
+hybrid:
+  vector_weight: 0.7       # Vector search weight (semantic)
+  bm25_weight: 0.3         # BM25 keyword search weight
+  k_multiplier: 3          # Over-retrieve multiplier for re-ranking
+
+# Re-ranking Configuration (Cross-Encoder)
+reranking:
+  enabled: true            # Enable cross-encoder re-ranking
+  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Cross-encoder model
+  # Alternative models:
+  # - "cross-encoder/ms-marco-MiniLM-L-12-v2" (better quality, slower)
+  # - "cross-encoder/ms-marco-electra-base" (best quality, slowest)
+  threshold: 0.0           # Minimum re-rank score (filter low scores)
+
+# MCP Agent Configuration
+mcp:
+  enabled: true  # Enable Simple MCP Agent
+  # Server configurations (optional - uses fallback tools if empty)
+  servers: {}
+
+# Multi-Query Configuration (Query Expansion)
+multi_query:
+  use_llm: false           # Use LLM for query expansion (vs rule-based)
+  num_queries: 3           # Number of query variations to generate
+  aggregation: "rrf"       # Result aggregation method: rrf, max, sum
+  # Note: LLM expansion requires vLLM running and provides better quality
+  # Rule-based is faster and works without LLM
+
+# Document Processing
+document:
+  chunk_size: 512
+  chunk_overlap: 50
+  supported_formats: ["txt", "pdf", "md", "docx"]
+
+# API Server
+# Note: 민감한 설정은 환경변수에서 로드됨 (.env 파일 참조)
+api:
+  host: "${API_HOST:-0.0.0.0}"
+  port: ${API_PORT:-9002}
+  debug: ${DEBUG:-false}  # production에서는 반드시 false
+  cors_origins: "${CORS_ORIGINS:-http://localhost:9004}"  # production에서는 특정 도메인만
+
+# Security Monitoring Configuration
+security:
+  # Kafka 설정 (알람 수신)
+  kafka:
+    bootstrap_servers: ["localhost:9092"]
+    topic: "security.alarms"
+    group_id: "vllm-security-monitoring"
+
+  # 이미지 저장 설정
+  alarm_images:
+    storage_path: "/home/sphwang/dev/vLLM/data/alarms"
+    retention_days: 30
+
+  # 보고서 저장 설정
+  reports:
+    storage_path: "/home/sphwang/dev/vLLM/data/reports"
+
+  # 장비 제어 설정
+  device_control:
+    rollback_timeout_seconds: 10
+    max_retry_attempts: 3
+
+# Device Control Configuration (ACU/CCTV 통합 제어)
+device_control:
+  # 기본 모드: simulation | real | hybrid
+  # - simulation: 시뮬레이션만 사용 (테스트용)
+  # - real: 실제 장치만 사용 (연결 실패 시 오류)
+  # - hybrid: 실제 장치 우선, 연결 실패 시 시뮬레이션 폴백
+  default_mode: "hybrid"
+
+  # 시뮬레이션 모드 설정
+  simulation:
+    enabled: true
+    response_delay_ms: 100  # 시뮬레이션 응답 지연 (현실감 부여)
+
+  # 실제 장치 연결 설정
+  real:
+    connection_timeout: 10   # 연결 타임아웃 (초)
+    command_timeout: 30      # 명령 실행 타임아웃 (초)
+    retry_count: 3           # 재시도 횟수
+    retry_delay: 1           # 재시도 간격 (초)
+
+  # 하이브리드 모드 설정
+  hybrid:
+    prefer_real: true              # 실제 장치 우선
+    fallback_to_simulation: true   # 연결 실패 시 시뮬레이션 폴백
+
+  # 프로토콜별 설정
+  adapters:
+    onvif:
+      wsdl_cache: true           # WSDL 캐시 사용
+      discovery_timeout: 5       # WS-Discovery 타임아웃 (초)
+    hanwha:
+      api_version: "v2"          # Wisenet API 버전
+    hikvision:
+      use_digest_auth: true      # Digest 인증 사용
+    zkteco:
+      sdk_path: ""               # ZKTeco SDK 경로 (선택)
+    suprema:
+      api_version: "2.8"         # BioStar 2 API 버전
+
+# Redis Configuration (RAG Caching)
+# 환경변수로 오버라이드 가능: REDIS_HOST, REDIS_PORT, REDIS_DB
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: ""  # 프로덕션에서는 환경변수 사용
+  # RAG 캐싱 설정
+  rag_cache:
+    enabled: true
+    ttl_seconds: 3600  # 1시간
+    key_prefix: "rag:"
+  # 대화 캐싱 설정
+  conversation_cache:
+    enabled: true
+    ttl_seconds: 86400  # 24시간
+    key_prefix: "conv:"
+
+# PostgreSQL Database
+# CRITICAL: 비밀번호는 환경변수에서 로드됨 - 하드코딩 금지!
+database:
+  # 환경변수로 오버라이드 가능: POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+  host: "localhost"
+  port: 5432
+  database: "total_llm"
+  username: "total_llm"
+  password: "total_llm_secret"  # 프로덕션에서는 반드시 환경변수 사용!
+  pool_size: 10
+  max_overflow: 20

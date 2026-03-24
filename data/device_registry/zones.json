@@ -1,0 +1,57 @@
+{
+  "zone_default": {
+    "id": "zone_default",
+    "name": "미분류",
+    "description": "존이 지정되지 않은 장치",
+    "security_level": 1,
+    "security_level_name": "PUBLIC",
+    "parent_zone_id": null,
+    "metadata": {},
+    "created_at": "2026-01-16T13:43:13.449831",
+    "updated_at": "2026-01-16T13:43:13.449844"
+  },
+  "zone_lobby": {
+    "id": "zone_lobby",
+    "name": "로비",
+    "description": "건물 입구 및 로비 구역",
+    "security_level": 1,
+    "security_level_name": "PUBLIC",
+    "parent_zone_id": null,
+    "metadata": {},
+    "created_at": "2026-01-16T13:43:13.449850",
+    "updated_at": "2026-01-16T13:43:13.449852"
+  },
+  "zone_office": {
+    "id": "zone_office",
+    "name": "사무실",
+    "description": "일반 사무 공간",
+    "security_level": 2,
+    "security_level_name": "STANDARD",
+    "parent_zone_id": null,
+    "metadata": {},
+    "created_at": "2026-01-16T13:43:13.449855",
+    "updated_at": "2026-01-16T13:43:13.449857"
+  },
+  "zone_server_room": {
+    "id": "zone_server_room",
+    "name": "서버실",
+    "description": "IT 인프라 및 서버 구역",
+    "security_level": 4,
+    "security_level_name": "HIGH_SECURITY",
+    "parent_zone_id": null,
+    "metadata": {},
+    "created_at": "2026-01-16T13:43:13.449860",
+    "updated_at": "2026-01-16T13:43:13.449861"
+  },
+  "zone_parking": {
+    "id": "zone_parking",
+    "name": "주차장",
+    "description": "지상/지하 주차 구역",
+    "security_level": 1,
+    "security_level_name": "PUBLIC",
+    "parent_zone_id": null,
+    "metadata": {},
+    "created_at": "2026-01-16T13:43:13.449864",
+    "updated_at": "2026-01-16T13:43:13.449866"
+  }
+}
