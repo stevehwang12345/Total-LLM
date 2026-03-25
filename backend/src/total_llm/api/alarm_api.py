@@ -5,11 +5,14 @@ Alarm Management API
 알람 조회 및 관리 API
 """
 
+from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import List, Optional
 from datetime import datetime
 import logging
+
+from total_llm.core.dependencies import AlarmHandlerDep
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +77,6 @@ class BatchAnalyzeResponse(BaseModel):
 
 
 # ============================================
-# Global Variables (main.py에서 주입)
-# ============================================
-
-alarm_handler = None
-
-
-def set_alarm_handler(handler):
-    """Alarm Handler 설정"""
-    global alarm_handler
-    alarm_handler = handler
-
-
-# ============================================
 # API Endpoints
 # ============================================
 
@@ -95,7 +85,8 @@ async def get_alarms(
     limit: int = Query(default=50, ge=1, le=200, description="반환할 알람 개수"),
     offset: int = Query(default=0, ge=0, description="페이지네이션 오프셋"),
     severity_filter: Optional[str] = Query(default=None, description="심각도 필터 (CRITICAL, HIGH, MEDIUM, LOW)"),
-    processed_only: bool = Query(default=False, description="처리된 알람만 조회")
+    processed_only: bool = Query(default=False, description="처리된 알람만 조회"),
+    alarm_handler: AlarmHandlerDep = None,
 ):
     """
     알람 목록 조회
@@ -109,9 +100,6 @@ async def get_alarms(
     Returns:
         알람 리스트
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     logger.info(f"📋 Fetching alarms: limit={limit}, offset={offset}, severity={severity_filter}")
 
     try:
@@ -130,7 +118,7 @@ async def get_alarms(
 
 
 @router.get("/{alarm_id}", response_model=Alarm)
-async def get_alarm(alarm_id: str):
+async def get_alarm(alarm_id: str, alarm_handler: AlarmHandlerDep = None):
     """
     특정 알람 조회
 
@@ -140,9 +128,6 @@ async def get_alarm(alarm_id: str):
     Returns:
         알람 상세 정보
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     try:
         alarms = await alarm_handler.get_alarms(limit=1, offset=0)
         alarm = next((a for a in alarms if a["alarm_id"] == alarm_id), None)
@@ -160,7 +145,7 @@ async def get_alarm(alarm_id: str):
 
 
 @router.post("/mark-processed", response_model=MarkProcessedResponse)
-async def mark_alarms_processed(request: MarkProcessedRequest):
+async def mark_alarms_processed(request: MarkProcessedRequest, alarm_handler: AlarmHandlerDep = None):
     """
     알람을 처리됨으로 표시
 
@@ -173,9 +158,6 @@ async def mark_alarms_processed(request: MarkProcessedRequest):
             "updated_count": 5
         }
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     logger.info(f"✅ Marking {len(request.alarm_ids)} alarms as processed")
 
     try:
@@ -192,7 +174,7 @@ async def mark_alarms_processed(request: MarkProcessedRequest):
 
 
 @router.get("/stats/summary")
-async def get_alarm_stats():
+async def get_alarm_stats(alarm_handler: AlarmHandlerDep = None):
     """
     알람 통계 조회
 
@@ -208,9 +190,6 @@ async def get_alarm_stats():
             "recent_count_24h": 20
         }
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     try:
         # 전체 알람 조회
         all_alarms = await alarm_handler.get_alarms(limit=1000, offset=0)
@@ -252,7 +231,7 @@ async def get_alarm_stats():
 
 
 @router.delete("/cleanup")
-async def cleanup_old_images():
+async def cleanup_old_images(alarm_handler: AlarmHandlerDep = None):
     """
     30일 경과 이미지 삭제
 
@@ -263,9 +242,6 @@ async def cleanup_old_images():
             "freed_space_mb": 456.78
         }
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     logger.info("🧹 Starting image cleanup...")
 
     try:
@@ -282,7 +258,7 @@ async def cleanup_old_images():
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(alarm_handler: AlarmHandlerDep = None):
     """
     헬스 체크
 
@@ -291,7 +267,7 @@ async def health_check():
     """
     return {
         "status": "healthy" if alarm_handler else "not_initialized",
-        "alarm_handler": alarm_handler is not None
+        "alarm_handler": alarm_handler is not None,
     }
 
 
@@ -300,7 +276,7 @@ async def health_check():
 # ============================================
 
 @router.post("/{alarm_id}/analyze", response_model=AnalyzeAlarmResponse)
-async def analyze_alarm_image(alarm_id: str, request: AnalyzeAlarmRequest):
+async def analyze_alarm_image(alarm_id: str, request: AnalyzeAlarmRequest, alarm_handler: AlarmHandlerDep = None):
     """
     특정 알람 이미지를 VLM으로 분석
 
@@ -321,9 +297,6 @@ async def analyze_alarm_image(alarm_id: str, request: AnalyzeAlarmRequest):
             }
         }
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     logger.info(f"🔍 Analyzing alarm image: {alarm_id} (force={request.force})")
 
     try:
@@ -352,7 +325,7 @@ async def analyze_alarm_image(alarm_id: str, request: AnalyzeAlarmRequest):
 
 
 @router.post("/analyze/batch", response_model=BatchAnalyzeResponse)
-async def batch_analyze_alarms(request: BatchAnalyzeRequest):
+async def batch_analyze_alarms(request: BatchAnalyzeRequest, alarm_handler: AlarmHandlerDep = None):
     """
     여러 알람 이미지를 병렬로 VLM 분석
 
@@ -378,9 +351,6 @@ async def batch_analyze_alarms(request: BatchAnalyzeRequest):
             ]
         }
     """
-    if not alarm_handler:
-        raise HTTPException(status_code=500, detail="Alarm handler not initialized")
-
     logger.info(f"🔍 Batch analyzing {len(request.alarm_ids)} alarms (force={request.force})")
 
     try:

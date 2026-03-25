@@ -5,10 +5,13 @@ Device Management API
 장비 등록, 조회, 제어 API
 """
 
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
 import logging
+
+from total_llm.core.dependencies import DeviceControlDep, DeviceRegistryDep
 
 logger = logging.getLogger(__name__)
 
@@ -70,33 +73,14 @@ class DeviceControlResponse(BaseModel):
 
 
 # ============================================
-# Global Variables (main.py에서 주입)
-# ============================================
-
-device_registry = None
-device_control = None
-
-
-def set_device_registry(registry):
-    """Device Registry 설정"""
-    global device_registry
-    device_registry = registry
-
-
-def set_device_control(control):
-    """Device Control 설정"""
-    global device_control
-    device_control = control
-
-
-# ============================================
 # API Endpoints
 # ============================================
 
 @router.get("", response_model=List[Device])
 async def get_devices(
     device_type: str = Query(default="all", description="장비 유형 필터 (CCTV, ACU, all)"),
-    status_filter: str = Query(default="all", description="상태 필터 (online, offline, all)")
+    status_filter: str = Query(default="all", description="상태 필터 (online, offline, all)"),
+    device_registry: DeviceRegistryDep = None,
 ):
     """
     장비 목록 조회
@@ -108,9 +92,6 @@ async def get_devices(
     Returns:
         장비 리스트
     """
-    if not device_registry:
-        raise HTTPException(status_code=500, detail="Device registry not initialized")
-
     logger.info(f"📋 Fetching devices: type={device_type}, status={status_filter}")
 
     try:
@@ -127,7 +108,7 @@ async def get_devices(
 
 
 @router.get("/{device_id}", response_model=Device)
-async def get_device(device_id: str):
+async def get_device(device_id: str, device_registry: DeviceRegistryDep = None):
     """
     특정 장비 조회
 
@@ -137,9 +118,6 @@ async def get_device(device_id: str):
     Returns:
         장비 상세 정보
     """
-    if not device_registry:
-        raise HTTPException(status_code=500, detail="Device registry not initialized")
-
     try:
         devices = await device_registry.list_devices()
         device = next((d for d in devices if d["device_id"] == device_id), None)
@@ -157,7 +135,7 @@ async def get_device(device_id: str):
 
 
 @router.get("/{device_id}/status", response_model=Device)
-async def get_device_status(device_id: str):
+async def get_device_status(device_id: str, device_registry: DeviceRegistryDep = None):
     """
     장비 상태 조회
 
@@ -167,9 +145,6 @@ async def get_device_status(device_id: str):
     Returns:
         장비 상태 정보
     """
-    if not device_registry:
-        raise HTTPException(status_code=500, detail="Device registry not initialized")
-
     logger.info(f"📊 Getting device status: {device_id}")
 
     try:
@@ -184,7 +159,7 @@ async def get_device_status(device_id: str):
 
 
 @router.post("/register", response_model=Device)
-async def register_device(request: DeviceRegisterRequest):
+async def register_device(request: DeviceRegisterRequest, device_registry: DeviceRegistryDep = None):
     """
     장비 등록
 
@@ -194,9 +169,6 @@ async def register_device(request: DeviceRegisterRequest):
     Returns:
         등록된 장비 정보
     """
-    if not device_registry:
-        raise HTTPException(status_code=500, detail="Device registry not initialized")
-
     logger.info(f"📝 Registering device: {request.device_type} ({request.manufacturer}) @ {request.ip_address}")
 
     try:
@@ -226,7 +198,7 @@ async def register_device(request: DeviceRegisterRequest):
 
 
 @router.post("/control", response_model=DeviceControlResponse)
-async def control_device_endpoint(request: DeviceControlRequest):
+async def control_device_endpoint(request: DeviceControlRequest, device_control: DeviceControlDep = None):
     """
     장비 제어
 
@@ -236,9 +208,6 @@ async def control_device_endpoint(request: DeviceControlRequest):
     Returns:
         제어 결과
     """
-    if not device_control:
-        raise HTTPException(status_code=500, detail="Device control not initialized")
-
     logger.info(f"🎛️ Controlling device: {request.device_id} → {request.command}")
 
     try:
@@ -295,7 +264,10 @@ async def get_available_commands(device_type: Optional[str] = Query(default=None
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(
+    device_registry: DeviceRegistryDep = None,
+    device_control: DeviceControlDep = None,
+):
     """
     헬스 체크
 

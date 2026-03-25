@@ -6,18 +6,25 @@ Qwen Function Calling 기반 보안 모니터링 채팅 API
 - Phase 2: 대화 지속성 지원 (PostgreSQL + Redis 캐싱)
 """
 
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
 import json
 import logging
 import asyncio
 
 from total_llm.functions.security_functions import SECURITY_FUNCTIONS, get_system_prompt
 from total_llm.config.model_config import get_llm_model_name
-from total_llm.services.conversation_service import ConversationService, get_conversation_service
-from total_llm.services.cache_service import CacheService, get_cache_service
+from total_llm.services.conversation_service import ConversationService
+from total_llm.services.cache_service import CacheService
+from total_llm.core.dependencies import (
+    CacheServiceDep,
+    CommandOrchestratorDep,
+    ConversationServiceDep,
+    LLMClientDep,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,48 +59,13 @@ class ChatResponse(BaseModel):
     mode: str
 
 
-# ============================================
-# Global Variables (main.py에서 주입)
-# ============================================
-
-command_orchestrator = None
-llm_client = None  # OpenAI-compatible client (Qwen)
-conversation_service: Optional[ConversationService] = None
-cache_service: Optional[CacheService] = None
-
-
-def set_command_orchestrator(orchestrator):
-    """Command Orchestrator 설정"""
-    global command_orchestrator
-    command_orchestrator = orchestrator
-
-
-def set_llm_client(client):
-    """LLM Client 설정 (Qwen)"""
-    global llm_client
-    llm_client = client
-
-
-def set_conversation_service(service: ConversationService):
-    """Conversation Service 설정"""
-    global conversation_service
-    conversation_service = service
-
-
-def set_cache_service(service: CacheService):
-    """Cache Service 설정"""
-    global cache_service
-    cache_service = service
-
-
 async def _get_or_create_conversation(
     conversation_id: Optional[str],
     user_id: str,
-    mode: str
+    mode: str,
+    conversation_service: Optional[ConversationService],
 ) -> str:
     """대화 ID 조회 또는 생성"""
-    global conversation_service
-
     if conversation_id:
         # 기존 대화 확인
         if conversation_service:
@@ -119,7 +91,13 @@ async def _get_or_create_conversation(
 # ============================================
 
 @router.post("/chat")
-async def security_chat(request: ChatRequest):
+async def security_chat(
+    request: ChatRequest,
+    command_orchestrator: CommandOrchestratorDep = None,
+    llm_client: LLMClientDep = None,
+    conversation_service: ConversationServiceDep = None,
+    cache_service: CacheServiceDep = None,
+):
     """
     보안 모니터링 채팅 (SSE 스트리밍)
 
@@ -130,16 +108,14 @@ async def security_chat(request: ChatRequest):
         Server-Sent Events 스트림
         - 첫 번째 이벤트에 conversation_id 포함
     """
-    if not command_orchestrator or not llm_client:
-        raise HTTPException(status_code=500, detail="Services not initialized")
-
     logger.info(f"💬 Chat request: mode={request.mode}, message='{request.message[:50]}...'")
 
     # 대화 ID 조회 또는 생성
     conv_id = await _get_or_create_conversation(
         request.conversation_id,
         request.user_id,
-        request.mode
+        request.mode,
+        conversation_service,
     )
 
     async def generate_stream():
@@ -152,7 +128,7 @@ async def security_chat(request: ChatRequest):
             system_prompt = get_system_prompt(request.mode)
 
             # 2. 대화 히스토리 구성
-            messages = [{"role": "system", "content": system_prompt}]
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
             # 대화 지속성: PostgreSQL에서 이전 대화 로드
             if conversation_service and request.conversation_id:
@@ -342,7 +318,12 @@ async def get_chat_modes():
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(
+    command_orchestrator: CommandOrchestratorDep = None,
+    llm_client: LLMClientDep = None,
+    conversation_service: ConversationServiceDep = None,
+    cache_service: CacheServiceDep = None,
+):
     """
     헬스 체크
 
@@ -377,7 +358,8 @@ async def health_check():
 async def list_conversations(
     user_id: str = Query(default="anonymous", description="사용자 ID"),
     limit: int = Query(default=20, ge=1, le=100, description="최대 조회 수"),
-    include_inactive: bool = Query(default=False, description="비활성 대화 포함")
+    include_inactive: bool = Query(default=False, description="비활성 대화 포함"),
+    conversation_service: ConversationServiceDep = None,
 ):
     """
     대화 목록 조회
@@ -403,7 +385,7 @@ async def list_conversations(
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, conversation_service: ConversationServiceDep = None):
     """
     대화 세션 조회
 
@@ -428,7 +410,8 @@ async def get_conversation(conversation_id: str):
 async def get_conversation_messages(
     conversation_id: str,
     limit: int = Query(default=50, ge=1, le=500, description="최대 조회 수"),
-    offset: int = Query(default=0, ge=0, description="건너뛸 메시지 수")
+    offset: int = Query(default=0, ge=0, description="건너뛸 메시지 수"),
+    conversation_service: ConversationServiceDep = None,
 ):
     """
     대화 메시지 조회
@@ -454,7 +437,11 @@ async def get_conversation_messages(
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
+async def delete_conversation(
+    conversation_id: str,
+    conversation_service: ConversationServiceDep = None,
+    cache_service: CacheServiceDep = None,
+):
     """
     대화 삭제
 
@@ -480,7 +467,7 @@ async def delete_conversation(conversation_id: str):
 
 
 @router.post("/conversations/{conversation_id}/close")
-async def close_conversation(conversation_id: str):
+async def close_conversation(conversation_id: str, conversation_service: ConversationServiceDep = None):
     """
     대화 세션 종료 (비활성화)
 
@@ -502,7 +489,10 @@ async def close_conversation(conversation_id: str):
 
 
 @router.get("/conversations/stats")
-async def get_conversation_stats():
+async def get_conversation_stats(
+    conversation_service: ConversationServiceDep = None,
+    cache_service: CacheServiceDep = None,
+):
     """
     대화 통계 조회
 

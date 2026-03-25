@@ -5,11 +5,14 @@ Log Ingestion API
 Fluentd로부터 로그를 수신하는 HTTP API
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
+
+from total_llm.core.dependencies import LogIndexerDep
 
 logger = logging.getLogger(__name__)
 
@@ -72,20 +75,11 @@ class LogStatsResponse(BaseModel):
 # API Endpoints
 # ============================================
 
-# Global log_indexer (main.py에서 주입)
-log_indexer = None
-
-
-def set_log_indexer(indexer):
-    """Log Indexer 인스턴스 설정 (main.py에서 호출)"""
-    global log_indexer
-    log_indexer = indexer
-
-
 @router.post("/ingest", response_model=LogIngestResponse)
 async def ingest_logs(
     request: LogIngestRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    log_indexer: LogIndexerDep = None,
 ):
     """
     Fluentd로부터 로그 배치 수신
@@ -102,9 +96,6 @@ async def ingest_logs(
             "qdrant_ids": [...]
         }
     """
-    if not log_indexer:
-        raise HTTPException(status_code=500, detail="Log indexer not initialized")
-
     logger.info(f"📥 Received {len(request.logs)} logs from Fluentd")
 
     try:
@@ -130,7 +121,7 @@ async def ingest_logs(
 
 
 @router.post("/search", response_model=LogSearchResponse)
-async def search_logs(request: LogSearchRequest):
+async def search_logs(request: LogSearchRequest, log_indexer: LogIndexerDep = None):
     """
     로그 검색 (벡터 유사도 기반)
 
@@ -144,9 +135,6 @@ async def search_logs(request: LogSearchRequest):
             "logs": [...]
         }
     """
-    if not log_indexer:
-        raise HTTPException(status_code=500, detail="Log indexer not initialized")
-
     logger.info(f"🔍 Searching logs: query='{request.query}'")
 
     try:
@@ -168,7 +156,7 @@ async def search_logs(request: LogSearchRequest):
 
 
 @router.get("/stats", response_model=LogStatsResponse)
-async def get_log_stats():
+async def get_log_stats(log_indexer: LogIndexerDep = None):
     """
     로그 인덱싱 통계 조회
 
@@ -183,9 +171,6 @@ async def get_log_stats():
             "last_indexed": "2025-01-09T15:30:45.123Z"
         }
     """
-    if not log_indexer:
-        raise HTTPException(status_code=500, detail="Log indexer not initialized")
-
     try:
         stats = await log_indexer.get_stats()
 
@@ -201,7 +186,7 @@ async def get_log_stats():
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(log_indexer: LogIndexerDep = None):
     """
     헬스 체크
 

@@ -5,9 +5,10 @@ Vision 모델을 사용한 이미지 분석 REST API 엔드포인트입니다.
 CCTV 이미지 분석, 사고 감지, 보고서 생성을 지원합니다.
 """
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Response
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 import logging
@@ -15,6 +16,7 @@ import base64
 import uuid
 import os
 import io
+from functools import lru_cache
 from PIL import Image
 
 from pathlib import Path
@@ -30,39 +32,28 @@ from total_llm.services.vision.korean_prompts import (
 )
 from total_llm.services.vision.templates.report_template import ReportTemplate, ReportMetadata
 from total_llm.services.vlm_analyzer import VLMAnalyzer
+from total_llm.core.dependencies import VLMAnalyzerDep
 
 logger = logging.getLogger(__name__)
 
 # Router 생성
 router = APIRouter(prefix="/image", tags=["Image Analysis"])
 
-# Incident Detector 인스턴스 (글로벌)
-_detector: Optional[IncidentDetector] = None
-
-# VLM Analyzer 인스턴스 (글로벌, main.py에서 주입)
-_vlm_analyzer: Optional[VLMAnalyzer] = None
-
-# 분석 결과 저장소 (메모리, 실제 환경에서는 DB 사용)
-_analysis_store: Dict[str, Dict[str, Any]] = {}
-
-# 대기 중인 이미지 저장소 (분석 전 이미지 보관)
-_pending_images: Dict[str, Dict[str, Any]] = {}
+@lru_cache(maxsize=1)
+def get_analysis_store() -> Dict[str, Dict[str, Any]]:
+    return {}
 
 
-def set_vlm_analyzer(vlm_analyzer: VLMAnalyzer) -> None:
-    """VLM Analyzer 설정 (main.py에서 호출)"""
-    global _vlm_analyzer
-    _vlm_analyzer = vlm_analyzer
-    logger.info("✅ VLM Analyzer set for image_api")
+@lru_cache(maxsize=1)
+def get_pending_images_store() -> Dict[str, Dict[str, Any]]:
+    return {}
 
 
+@lru_cache(maxsize=1)
 def get_detector() -> IncidentDetector:
     """Incident Detector 인스턴스 반환"""
-    global _detector
-    if _detector is None:
-        _detector = IncidentDetector()
-        logger.info("IncidentDetector initialized")
-    return _detector
+    logger.info("IncidentDetector initialized")
+    return IncidentDetector()
 
 
 # =============================================================================
@@ -278,7 +269,12 @@ def _resize_image_base64(image_base64: str, max_size: int = 512) -> str:
         return image_base64
 
 
-async def _analyze_with_vlm(image_base64: str, prompt: Optional[str] = None, location: str = "미지정") -> str:
+async def _analyze_with_vlm(
+    image_base64: str,
+    prompt: Optional[str] = None,
+    location: str = "미지정",
+    vlm_analyzer: Optional[VLMAnalyzer] = None,
+) -> str:
     """
     실제 VLM Analyzer를 사용한 이미지 분석
 
@@ -290,9 +286,7 @@ async def _analyze_with_vlm(image_base64: str, prompt: Optional[str] = None, loc
     Returns:
         분석 결과 텍스트
     """
-    global _vlm_analyzer
-
-    if _vlm_analyzer is None:
+    if vlm_analyzer is None:
         logger.warning("⚠️ VLM Analyzer not initialized, using fallback simulation")
         return _fallback_simulation(image_base64)
 
@@ -316,8 +310,8 @@ async def _analyze_with_vlm(image_base64: str, prompt: Optional[str] = None, loc
         resized_image = _resize_image_base64(image_base64, max_size=512)
 
         # VLM API 호출 (리사이즈된 이미지 사용)
-        response = await _vlm_analyzer.client.chat.completions.create(
-            model=_vlm_analyzer.model_name,
+        response = await vlm_analyzer.client.chat.completions.create(
+            model=vlm_analyzer.model_name,
             messages=[
                 {
                     "role": "system",
@@ -339,11 +333,11 @@ async def _analyze_with_vlm(image_base64: str, prompt: Optional[str] = None, loc
                     ]
                 }
             ],
-            max_tokens=_vlm_analyzer.max_tokens,
-            temperature=_vlm_analyzer.temperature
+            max_tokens=vlm_analyzer.max_tokens,
+            temperature=vlm_analyzer.temperature
         )
 
-        analysis = response.choices[0].message.content
+        analysis = response.choices[0].message.content or ""
         logger.info(f"✅ VLM analysis complete ({len(analysis)} chars)")
         return analysis
 
@@ -409,7 +403,7 @@ def _get_recommended_actions(incident_type: IncidentType, severity: SeverityLeve
 # =============================================================================
 
 @router.get("/health", summary="이미지 분석 서비스 상태 확인")
-async def health_check():
+async def health_check(vlm_analyzer: VLMAnalyzerDep = None):
     """
     Image Analysis API 상태를 확인합니다.
 
@@ -419,11 +413,10 @@ async def health_check():
 
     **주의**: vlm_status가 "fallback"이면 실제 이미지 분석이 아닌 시뮬레이션 결과가 반환됩니다.
     """
-    global _vlm_analyzer
     detector = get_detector()
 
     # VLM 연결 상태 확인
-    vlm_connected = _vlm_analyzer is not None
+    vlm_connected = vlm_analyzer is not None
     vlm_status = "connected" if vlm_connected else "fallback"
 
     # VLM 서버 연결 테스트 (연결된 경우)
@@ -432,10 +425,10 @@ async def health_check():
     if vlm_connected:
         try:
             # 간단한 모델 정보 요청으로 연결 확인
-            models = await _vlm_analyzer.client.models.list()
+            models = await vlm_analyzer.client.models.list()
             vlm_server_reachable = True
             vlm_model_info = {
-                "model_name": _vlm_analyzer.model_name,
+                "model_name": vlm_analyzer.model_name,
                 "available_models": [m.id for m in models.data] if models.data else []
             }
         except Exception as e:
@@ -451,8 +444,8 @@ async def health_check():
         "vlm_model_info": vlm_model_info,
         "incident_types": len(IncidentType),
         "severity_levels": len(SeverityLevel),
-        "stored_analyses": len(_analysis_store),
-        "pending_images": len(_pending_images),
+        "stored_analyses": len(get_analysis_store()),
+        "pending_images": len(get_pending_images_store()),
         "detector_patterns": {
             "no_person": len(detector.no_person_patterns),
             "unclear": len(detector.unclear_patterns),
@@ -468,7 +461,7 @@ async def health_check():
 # =============================================================================
 
 @router.post("/analyze", response_model=ImageAnalyzeResponse, summary="이미지 분석")
-async def analyze_image(request: ImageAnalyzeRequest):
+async def analyze_image(request: ImageAnalyzeRequest, vlm_analyzer: VLMAnalyzerDep = None):
     """
     단일 이미지를 분석합니다.
 
@@ -485,7 +478,8 @@ async def analyze_image(request: ImageAnalyzeRequest):
         raw_analysis = await _analyze_with_vlm(
             request.image_base64,
             request.prompt,
-            request.location
+            request.location,
+            vlm_analyzer,
         )
 
         # 사고 감지 및 분석
@@ -515,7 +509,7 @@ async def analyze_image(request: ImageAnalyzeRequest):
         }
 
         # 저장소에 보관
-        _analysis_store[analysis_id] = result
+        get_analysis_store()[analysis_id] = result
 
         logger.info(f"Image analyzed: {analysis_id} - {primary_incident.value} ({severity.value})")
 
@@ -533,7 +527,8 @@ async def analyze_image(request: ImageAnalyzeRequest):
 async def analyze_uploaded_image(
     file: UploadFile = File(..., description="분석할 이미지 파일"),
     location: str = Form(default="미지정", description="촬영 위치"),
-    mode: str = Form(default="standard", description="분석 모드 (quick/standard/detailed)")
+    mode: str = Form(default="standard", description="분석 모드 (quick/standard/detailed)"),
+    vlm_analyzer: VLMAnalyzerDep = None,
 ):
     """
     업로드된 이미지 파일을 분석합니다.
@@ -556,15 +551,16 @@ async def analyze_uploaded_image(
     # 분석 요청 생성
     request = ImageAnalyzeRequest(
         image_base64=image_base64,
+        prompt=None,
         location=location,
         mode=AnalysisMode(mode)
     )
 
-    return await analyze_image(request)
+    return await analyze_image(request=request, vlm_analyzer=vlm_analyzer)
 
 
 @router.post("/batch", response_model=BatchAnalyzeResponse, summary="배치 이미지 분석")
-async def analyze_batch(request: BatchAnalyzeRequest):
+async def analyze_batch(request: BatchAnalyzeRequest, vlm_analyzer: VLMAnalyzerDep = None):
     """
     여러 이미지를 배치로 분석합니다.
 
@@ -589,11 +585,12 @@ async def analyze_batch(request: BatchAnalyzeRequest):
             # 개별 분석 요청
             single_request = ImageAnalyzeRequest(
                 image_base64=image_base64,
+                prompt=None,
                 location=location,
                 mode=request.mode
             )
 
-            result = await analyze_image(single_request)
+            result = await analyze_image(request=single_request, vlm_analyzer=vlm_analyzer)
             results.append(result.model_dump())
             completed += 1
 
@@ -651,7 +648,7 @@ async def upload_image_only(
     uploaded_at = datetime.now().isoformat()
 
     # 대기 저장소에 저장
-    _pending_images[image_id] = {
+    get_pending_images_store()[image_id] = {
         "image_id": image_id,
         "image_base64": image_base64,
         "filename": file.filename,
@@ -681,7 +678,7 @@ async def list_pending_images():
     분석 대기 중인 이미지 목록을 조회합니다.
     """
     results = []
-    for image_id, data in _pending_images.items():
+    for image_id, data in get_pending_images_store().items():
         results.append({
             "image_id": image_id,
             "filename": data.get("filename", "unknown"),
@@ -707,7 +704,7 @@ async def get_pending_image(image_id: str):
     """
     대기 중인 이미지 정보를 조회합니다.
     """
-    pending = _pending_images.get(image_id)
+    pending = get_pending_images_store().get(image_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"Pending image not found: {image_id}")
 
@@ -730,7 +727,7 @@ async def get_pending_image_file(image_id: str):
     """
     대기 중인 이미지 파일을 조회합니다.
     """
-    pending = _pending_images.get(image_id)
+    pending = get_pending_images_store().get(image_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"Pending image not found: {image_id}")
 
@@ -762,7 +759,8 @@ async def get_pending_image_file(image_id: str):
 @router.post("/pending/{image_id}/analyze", response_model=ImageAnalyzeResponse, summary="대기 이미지 분석 시작")
 async def analyze_pending_image(
     image_id: str,
-    request: Optional[TriggerAnalysisRequest] = None
+    request: Optional[TriggerAnalysisRequest] = None,
+    vlm_analyzer: VLMAnalyzerDep = None,
 ):
     """
     대기 중인 이미지에 대해 VLM 분석을 시작합니다.
@@ -770,12 +768,12 @@ async def analyze_pending_image(
     - 분석이 완료되면 이미지는 대기 목록에서 제거되고 분석 결과로 저장됩니다.
     - 분석 모드: quick, standard, detailed
     """
-    pending = _pending_images.get(image_id)
+    pending = get_pending_images_store().get(image_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"Pending image not found: {image_id}")
 
     # 상태 업데이트
-    _pending_images[image_id]["status"] = "analyzing"
+    get_pending_images_store()[image_id]["status"] = "analyzing"
 
     mode = request.mode if request else AnalysisMode.STANDARD
 
@@ -783,21 +781,22 @@ async def analyze_pending_image(
         # 분석 요청 생성
         analyze_request = ImageAnalyzeRequest(
             image_base64=pending["image_base64"],
+            prompt=None,
             location=pending.get("location", "미지정"),
             mode=mode
         )
 
         # 분석 수행
-        result = await analyze_image(analyze_request)
+        result = await analyze_image(request=analyze_request, vlm_analyzer=vlm_analyzer)
 
         # 분석 결과에 device_id 추가
         if pending.get("device_id") and result.success:
             analysis_id = result.analysis_id
-            if analysis_id in _analysis_store:
-                _analysis_store[analysis_id]["device_id"] = pending.get("device_id")
+            if analysis_id in get_analysis_store():
+                get_analysis_store()[analysis_id]["device_id"] = pending.get("device_id")
 
         # 대기 목록에서 제거
-        del _pending_images[image_id]
+        del get_pending_images_store()[image_id]
 
         logger.info(f"Pending image analyzed: {image_id} -> {result.analysis_id}")
 
@@ -805,8 +804,8 @@ async def analyze_pending_image(
 
     except Exception as e:
         # 실패 시 상태 복원
-        if image_id in _pending_images:
-            _pending_images[image_id]["status"] = "pending"
+        if image_id in get_pending_images_store():
+            get_pending_images_store()[image_id]["status"] = "pending"
         logger.error(f"Failed to analyze pending image {image_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -816,10 +815,10 @@ async def delete_pending_image(image_id: str):
     """
     대기 중인 이미지를 삭제합니다.
     """
-    if image_id not in _pending_images:
+    if image_id not in get_pending_images_store():
         raise HTTPException(status_code=404, detail=f"Pending image not found: {image_id}")
 
-    del _pending_images[image_id]
+    del get_pending_images_store()[image_id]
     logger.info(f"Pending image deleted: {image_id}")
 
     return {"success": True, "message": f"Deleted pending image: {image_id}"}
@@ -837,10 +836,10 @@ async def delete_analysis(analysis_id: str):
     - analysis_id로 분석 결과를 삭제합니다.
     - 연관된 이미지 데이터도 함께 삭제됩니다.
     """
-    if analysis_id not in _analysis_store:
+    if analysis_id not in get_analysis_store():
         raise HTTPException(status_code=404, detail=f"Analysis not found: {analysis_id}")
 
-    del _analysis_store[analysis_id]
+    del get_analysis_store()[analysis_id]
     logger.info(f"Analysis deleted: {analysis_id}")
 
     return {"success": True, "message": f"Deleted analysis: {analysis_id}"}
@@ -855,7 +854,7 @@ async def get_analysis_image(analysis_id: str):
     - Base64로 저장된 이미지를 디코딩하여 반환합니다.
     """
     # analysis_id 또는 report_id로 검색
-    analysis = _analysis_store.get(analysis_id)
+    analysis = get_analysis_store().get(analysis_id)
 
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Analysis not found: {analysis_id}")
@@ -892,14 +891,14 @@ async def get_analysis_result(analysis_id: str):
 
     - analysis_id로 이전 분석 결과를 조회합니다.
     """
-    if analysis_id not in _analysis_store:
+    if analysis_id not in get_analysis_store():
         return AnalysisResultResponse(
             success=False,
             error=f"Analysis not found: {analysis_id}"
         )
 
     # 이미지 데이터는 응답에서 제외 (별도 엔드포인트로 조회)
-    result = {k: v for k, v in _analysis_store[analysis_id].items() if k != "image_base64"}
+    result = {k: v for k, v in get_analysis_store()[analysis_id].items() if k != "image_base64"}
 
     return AnalysisResultResponse(
         success=True,
@@ -918,7 +917,7 @@ async def list_analysis_results(
 
     - 필터링 옵션을 제공합니다.
     """
-    results = list(_analysis_store.values())
+    results = list(get_analysis_store().values())
 
     # 필터링
     if incident_type:
@@ -967,8 +966,8 @@ async def generate_report(request: ReportRequest):
     analyses = []
     security_reports = []
     for aid in request.analysis_ids:
-        if aid in _analysis_store:
-            stored = _analysis_store[aid]
+        if aid in get_analysis_store():
+            stored = get_analysis_store()[aid]
             # 보안 보고서인지 일반 분석인지 구분
             if stored.get("analysis_type") == "security_report":
                 security_reports.append(stored)
@@ -1090,7 +1089,7 @@ def _generate_markdown_report(title: str, analyses: List[Dict], timestamp: datet
 # =============================================================================
 
 @router.post("/analyze/qa", response_model=QAAnalyzeResponse, summary="QA 기반 구조화 분석")
-async def analyze_image_qa(request: QAAnalyzeRequest):
+async def analyze_image_qa(request: QAAnalyzeRequest, vlm_analyzer: VLMAnalyzerDep = None):
     """
     4단계 QA 기반 구조화된 이미지 분석을 수행합니다.
 
@@ -1102,7 +1101,6 @@ async def analyze_image_qa(request: QAAnalyzeRequest):
 
     이 분석은 표준 분석보다 더 구조화된 결과를 제공합니다.
     """
-    global _vlm_analyzer
     detector = get_detector()
 
     timestamp = request.timestamp or datetime.now().isoformat()
@@ -1110,15 +1108,15 @@ async def analyze_image_qa(request: QAAnalyzeRequest):
 
     try:
         # VLM Analyzer 확인
-        if _vlm_analyzer is None:
+        if vlm_analyzer is None:
             raise HTTPException(
                 status_code=503,
                 detail="VLM Analyzer not initialized. Please check backend configuration."
             )
 
         # QA 기반 분석 수행
-        if hasattr(_vlm_analyzer, 'analyze_qa_based'):
-            qa_result = await _vlm_analyzer.analyze_qa_based(
+        if hasattr(vlm_analyzer, 'analyze_qa_based'):
+            qa_result = await vlm_analyzer.analyze_qa_based(
                 image_base64=request.image_base64,
                 location=request.location,
                 timestamp=timestamp
@@ -1128,7 +1126,8 @@ async def analyze_image_qa(request: QAAnalyzeRequest):
             raw_analysis = await _analyze_with_vlm(
                 request.image_base64,
                 None,
-                request.location
+                request.location,
+                vlm_analyzer,
             )
             qa_result = {
                 "qa_results": {
@@ -1177,7 +1176,7 @@ async def analyze_image_qa(request: QAAnalyzeRequest):
             "image_base64": request.image_base64,  # 원본 이미지 저장
         }
 
-        _analysis_store[analysis_id] = result
+        get_analysis_store()[analysis_id] = result
 
         logger.info(f"QA-based analysis complete: {analysis_id} - {incident_type.value} ({severity.value})")
 
@@ -1194,7 +1193,7 @@ async def analyze_image_qa(request: QAAnalyzeRequest):
 
 
 @router.post("/report/security", response_model=SecurityReportResponse, summary="보안 보고서 생성")
-async def generate_security_report(request: SecurityReportRequest):
+async def generate_security_report(request: SecurityReportRequest, vlm_analyzer: VLMAnalyzerDep = None):
     """
     전체 보안 분석 파이프라인을 실행하여 마크다운 보고서를 생성합니다.
 
@@ -1211,22 +1210,20 @@ async def generate_security_report(request: SecurityReportRequest):
     - 권장 조치
     - 종합 의견
     """
-    global _vlm_analyzer
-
     timestamp = request.timestamp or datetime.now().isoformat()
     report_id = ReportTemplate.generate_report_id(timestamp, request.location) if hasattr(ReportTemplate, 'generate_report_id') else str(uuid.uuid4())[:8]
 
     try:
         # VLM Analyzer 확인
-        if _vlm_analyzer is None:
+        if vlm_analyzer is None:
             raise HTTPException(
                 status_code=503,
                 detail="VLM Analyzer not initialized. Please check backend configuration."
             )
 
         # 보안 보고서 생성 (전체 파이프라인)
-        if hasattr(_vlm_analyzer, 'generate_security_report'):
-            report_result = await _vlm_analyzer.generate_security_report(
+        if hasattr(vlm_analyzer, 'generate_security_report'):
+            report_result = await vlm_analyzer.generate_security_report(
                 image_base64=request.image_base64,
                 location=request.location,
                 timestamp=timestamp
@@ -1236,7 +1233,8 @@ async def generate_security_report(request: SecurityReportRequest):
             raw_analysis = await _analyze_with_vlm(
                 request.image_base64,
                 None,
-                request.location
+                request.location,
+                vlm_analyzer,
             )
             detector = get_detector()
             incident_result = detector.analyze_incident(raw_analysis)
@@ -1300,7 +1298,7 @@ async def generate_security_report(request: SecurityReportRequest):
         }
 
         # VLM이 반환한 report_id로 저장 (프론트엔드가 받는 ID와 일치)
-        _analysis_store[final_report_id] = result_to_store
+        get_analysis_store()[final_report_id] = result_to_store
 
         logger.info(f"Security report generated: {final_report_id}")
 
@@ -1327,7 +1325,8 @@ async def generate_security_report(request: SecurityReportRequest):
 async def analyze_uploaded_image_qa(
     file: UploadFile = File(..., description="분석할 이미지 파일"),
     location: str = Form(default="미지정", description="촬영 위치"),
-    timestamp: Optional[str] = Form(default=None, description="촬영 시간")
+    timestamp: Optional[str] = Form(default=None, description="촬영 시간"),
+    vlm_analyzer: VLMAnalyzerDep = None,
 ):
     """
     업로드된 이미지 파일에 대해 QA 기반 구조화 분석을 수행합니다.
@@ -1354,14 +1353,15 @@ async def analyze_uploaded_image_qa(
         timestamp=timestamp
     )
 
-    return await analyze_image_qa(request)
+    return await analyze_image_qa(request, vlm_analyzer)
 
 
 @router.post("/report/security/upload", response_model=SecurityReportResponse, summary="보안 보고서 생성 (파일 업로드)")
 async def generate_security_report_upload(
     file: UploadFile = File(..., description="분석할 이미지 파일"),
     location: str = Form(default="미지정", description="촬영 위치"),
-    timestamp: Optional[str] = Form(default=None, description="촬영 시간")
+    timestamp: Optional[str] = Form(default=None, description="촬영 시간"),
+    vlm_analyzer: VLMAnalyzerDep = None,
 ):
     """
     업로드된 이미지 파일에 대해 전체 보안 분석 파이프라인을 실행합니다.
@@ -1388,5 +1388,4 @@ async def generate_security_report_upload(
         timestamp=timestamp
     )
 
-    return await generate_security_report(request)
-
+    return await generate_security_report(request, vlm_analyzer)

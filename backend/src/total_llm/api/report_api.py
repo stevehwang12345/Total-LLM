@@ -5,12 +5,15 @@ Report Generation API
 PDF 보고서 생성 및 다운로드 API
 """
 
+from typing import List
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from typing import List
 import logging
 from pathlib import Path
+
+from total_llm.core.dependencies import ReportGeneratorDep
 
 logger = logging.getLogger(__name__)
 
@@ -38,24 +41,11 @@ class ReportGenerateResponse(BaseModel):
 
 
 # ============================================
-# Global Variables (main.py에서 주입)
-# ============================================
-
-report_generator = None
-
-
-def set_report_generator(generator):
-    """Report Generator 설정"""
-    global report_generator
-    report_generator = generator
-
-
-# ============================================
 # API Endpoints
 # ============================================
 
 @router.post("/generate", response_model=ReportGenerateResponse)
-async def generate_report(request: ReportGenerateRequest):
+async def generate_report(request: ReportGenerateRequest, report_generator: ReportGeneratorDep = None):
     """
     보고서 생성
 
@@ -71,9 +61,6 @@ async def generate_report(request: ReportGenerateRequest):
             "file_size_kb": 1234.56
         }
     """
-    if not report_generator:
-        raise HTTPException(status_code=500, detail="Report generator not initialized")
-
     logger.info(f"📄 Generating report for {len(request.alarm_ids)} alarms")
 
     try:
@@ -94,7 +81,7 @@ async def generate_report(request: ReportGenerateRequest):
 
 
 @router.get("/{report_id}/download")
-async def download_report(report_id: int):
+async def download_report(report_id: int, report_generator: ReportGeneratorDep = None):
     """
     보고서 다운로드
 
@@ -104,9 +91,6 @@ async def download_report(report_id: int):
     Returns:
         PDF 파일
     """
-    if not report_generator:
-        raise HTTPException(status_code=500, detail="Report generator not initialized")
-
     logger.info(f"⬇️ Downloading report: {report_id}")
 
     try:
@@ -139,7 +123,7 @@ async def download_report(report_id: int):
 
 
 @router.get("/{report_id}")
-async def get_report_info(report_id: int):
+async def get_report_info(report_id: int, report_generator: ReportGeneratorDep = None):
     """
     보고서 정보 조회
 
@@ -156,9 +140,6 @@ async def get_report_info(report_id: int):
             "generated_by": "..."
         }
     """
-    if not report_generator:
-        raise HTTPException(status_code=500, detail="Report generator not initialized")
-
     try:
         async with report_generator.db_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -195,7 +176,8 @@ async def get_report_info(report_id: int):
 @router.get("")
 async def list_reports(
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    report_generator: ReportGeneratorDep = None,
 ):
     """
     보고서 목록 조회
@@ -207,9 +189,6 @@ async def list_reports(
     Returns:
         보고서 리스트
     """
-    if not report_generator:
-        raise HTTPException(status_code=500, detail="Report generator not initialized")
-
     try:
         async with report_generator.db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -242,7 +221,7 @@ async def list_reports(
 
 
 @router.delete("/{report_id}")
-async def delete_report(report_id: int):
+async def delete_report(report_id: int, report_generator: ReportGeneratorDep = None):
     """
     보고서 삭제
 
@@ -252,9 +231,6 @@ async def delete_report(report_id: int):
     Returns:
         {"status": "success", "deleted": true}
     """
-    if not report_generator:
-        raise HTTPException(status_code=500, detail="Report generator not initialized")
-
     logger.info(f"🗑️ Deleting report: {report_id}")
 
     try:
@@ -290,7 +266,7 @@ async def delete_report(report_id: int):
 
 
 @router.get("/health")
-async def health_check():
+async def health_check(report_generator: ReportGeneratorDep = None):
     """
     헬스 체크
 
