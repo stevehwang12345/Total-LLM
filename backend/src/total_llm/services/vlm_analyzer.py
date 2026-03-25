@@ -18,24 +18,48 @@ from datetime import datetime
 import base64
 import asyncio
 import io
+import json
 from openai import AsyncOpenAI
 from PIL import Image
+from pydantic import ValidationError
+
+from total_llm.core.config import get_settings
+from total_llm.core.models import (
+    IncidentAnalysis,
+    IncidentType,
+    QAResult,
+    SecurityAlarmResult,
+    SecurityReport,
+    SeverityLevel,
+)
 
 # Vision 모듈 통합 (granite-vision-korean-poc 포팅)
 try:
-    from .vision.detection.incident_detector import IncidentDetector, IncidentType, SeverityLevel
+    from .vision.detection.incident_detector import IncidentDetector
     from .vision.korean_prompts import (
         SECURITY_QA_PROMPTS,
         create_security_prompt,
         create_structured_security_prompt,
-        get_prompt,
     )
     from .vision.templates.report_template import ReportTemplate, ReportMetadata
     VISION_MODULE_AVAILABLE = True
 except ImportError:
     VISION_MODULE_AVAILABLE = False
+    SECURITY_QA_PROMPTS = {}
+    IncidentDetector = None
+    create_security_prompt = None
+    create_structured_security_prompt = None
+    ReportTemplate = None
+    ReportMetadata = None
 
 logger = logging.getLogger(__name__)
+
+IncidentDetector: Any
+SECURITY_QA_PROMPTS: Dict[str, str]
+create_security_prompt: Any
+create_structured_security_prompt: Any
+ReportTemplate: Any
+ReportMetadata: Any
 
 
 class VLMAnalyzer:
@@ -69,6 +93,9 @@ class VLMAnalyzer:
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
+        settings = get_settings()
+        self.max_image_size = settings.vlm.max_image_size
+        self.jpeg_quality = settings.vlm.jpeg_quality
 
         logger.info(f"✅ VLMAnalyzer initialized (model={model_name})")
 
@@ -127,7 +154,7 @@ class VLMAnalyzer:
                 temperature=self.temperature
             )
 
-            analysis = response.choices[0].message.content
+            analysis = response.choices[0].message.content or ""
             logger.info(f"✅ Analysis complete ({len(analysis)} chars)")
 
             return analysis
@@ -182,7 +209,7 @@ class VLMAnalyzer:
                 temperature=self.temperature
             )
 
-            summary = response.choices[0].message.content
+            summary = response.choices[0].message.content or ""
             logger.info(f"✅ Collective analysis complete ({len(summary)} chars)")
 
             return summary
@@ -232,7 +259,7 @@ class VLMAnalyzer:
         alarm_type: str,
         location: str,
         severity: str
-    ) -> Dict[str, Any]:
+    ) -> SecurityAlarmResult | Dict[str, Any]:
         """
         보안 알람 특화 분석
 
@@ -253,25 +280,11 @@ class VLMAnalyzer:
         """
         logger.info(f"🚨 Security-specific analysis: {alarm_type} @ {location}")
 
-        # 보안 특화 프롬프트
-        prompt = f"""이 이미지는 {location}에서 발생한 {alarm_type} 알람입니다 (심각도: {severity}).
-
-다음 항목을 분석해주세요:
-1. 실제 위협이 감지되었는가?
-2. 위협 수준은? (CRITICAL, HIGH, MEDIUM, LOW, FALSE_POSITIVE)
-3. 무엇이 보이는가? (사람, 물체, 행동 등)
-4. 권장 조치 사항 (최대 3개)
-5. 분석 신뢰도 (0.0-1.0)
-
-JSON 형식으로 답변하세요:
-{{
-  "threat_detected": true/false,
-  "threat_level": "CRITICAL/HIGH/MEDIUM/LOW/FALSE_POSITIVE",
-  "description": "상세 설명",
-  "recommended_actions": ["조치1", "조치2", "조치3"],
-  "confidence": 0.95
-}}
-"""
+        prompt = create_structured_security_prompt(
+            location=location,
+            alarm_type=alarm_type,
+            severity=severity,
+        )
 
         try:
             # 이미지 분석
@@ -280,24 +293,12 @@ JSON 형식으로 답변하세요:
                 prompt=prompt
             )
 
-            # JSON 파싱 시도
-            import json
-            import re
-
-            # JSON 블록 추출 (```json ... ``` 또는 { ... })
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', analysis_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-                json_str = json_match.group(0) if json_match else analysis_text
-
             try:
-                result = json.loads(json_str)
-                logger.info(f"✅ Structured analysis: threat={result.get('threat_detected')}")
+                json_str = self._extract_json_payload(analysis_text)
+                result = SecurityAlarmResult.model_validate_json(json_str)
+                logger.info(f"✅ Structured analysis: threat={result.threat_detected}")
                 return result
-            except json.JSONDecodeError:
-                # JSON 파싱 실패 시 기본 응답
+            except ValidationError:
                 logger.warning("⚠️ Failed to parse JSON, returning text analysis")
                 return {
                     "threat_detected": severity in ["CRITICAL", "HIGH"],
@@ -315,7 +316,7 @@ JSON 형식으로 답변하세요:
     # 이미지 인코딩
     # ============================================
 
-    def _resize_image_base64(self, image_base64: str, max_size: int = 512) -> str:
+    def _resize_image_base64(self, image_base64: str, max_size: Optional[int] = None) -> str:
         """
         이미지를 리사이즈하여 토큰 사용량을 줄입니다.
 
@@ -327,6 +328,9 @@ JSON 형식으로 답변하세요:
             리사이즈된 Base64 인코딩된 이미지
         """
         try:
+            if max_size is None:
+                max_size = self.max_image_size
+
             # Base64 디코딩
             image_data = base64.b64decode(image_base64)
             image = Image.open(io.BytesIO(image_data))
@@ -347,7 +351,7 @@ JSON 형식으로 답변하세요:
 
             # Base64로 다시 인코딩
             buffer = io.BytesIO()
-            image.save(buffer, format='JPEG', quality=85)
+            image.save(buffer, format='JPEG', quality=self.jpeg_quality)
             resized_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
 
             logger.info(f"✅ 이미지 리사이즈: {original_size} → {image.size}")
@@ -357,7 +361,7 @@ JSON 형식으로 답변하세요:
             logger.warning(f"⚠️ 이미지 리사이즈 실패, 원본 사용: {e}")
             return image_base64
 
-    def _encode_image(self, image_path: str, max_size: int = 512) -> str:
+    def _encode_image(self, image_path: str, max_size: Optional[int] = None) -> str:
         """
         이미지를 base64로 인코딩하고 리사이즈
 
@@ -443,6 +447,41 @@ JSON 형식으로 답변하세요:
     # QA 기반 구조화 분석 (granite-vision-korean-poc 통합)
     # ============================================
 
+    async def _run_single_qa(
+        self,
+        qa_key: str,
+        qa_prompt: str,
+        image_base64: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> tuple[str, str]:
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a security expert analyzing CCTV footage. Answer concisely.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": qa_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                            },
+                        ],
+                    },
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return qa_key, response.choices[0].message.content or ""
+        except Exception as e:
+            logger.error(f"❌ QA {qa_key} failed: {e}")
+            return qa_key, f"Error: {str(e)}"
+
     async def analyze_qa_based(
         self,
         image_path: Optional[str] = None,
@@ -451,7 +490,7 @@ JSON 형식으로 답변하세요:
         max_tokens: int = 256,
         temperature: float = 0.3,
         image_base64: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> IncidentAnalysis | Dict[str, Any]:
         """
         4단계 QA 기반 구조화 분석
 
@@ -478,24 +517,22 @@ JSON 형식으로 답변하세요:
         """
         if not VISION_MODULE_AVAILABLE:
             logger.warning("⚠️ Vision module not available, using fallback")
-            return {
-                "qa_results": {
-                    "q1_detection": "N/A - Vision module not available",
-                    "q2_classification": "N/A",
-                    "q3_subject": "N/A",
-                    "q4_description": "N/A",
-                },
-                "incident_type": "NORMAL",
-                "severity": "INFO",
-                "confidence": 0.5,
-            }
+            return IncidentAnalysis(
+                qa_results=QAResult(
+                    q1_detection="N/A - Vision module not available",
+                    q2_classification="N/A",
+                    q3_subject="N/A",
+                    q4_description="N/A",
+                ),
+                incident_type=IncidentType.NORMAL,
+                severity=SeverityLevel.INFO,
+                confidence=0.5,
+            )
 
         if timestamp is None:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         logger.info(f"🔍 QA-based analysis: {location} at {timestamp}")
-
-        qa_results = {}
 
         # Base64 이미지 처리 (API에서 직접 전달받거나 파일에서 인코딩)
         if image_base64 is None:
@@ -504,48 +541,37 @@ JSON 형식으로 답변하세요:
             image_base64 = self._encode_image(image_path)
         else:
             # API에서 받은 이미지도 리사이즈
-            image_base64 = self._resize_image_base64(image_base64, max_size=512)
+            image_base64 = self._resize_image_base64(image_base64)
 
-        for qa_key, qa_prompt in SECURITY_QA_PROMPTS.items():
-            try:
-                response = await self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a security expert analyzing CCTV footage. Answer concisely."
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": qa_prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                                }
-                            ]
-                        }
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                qa_results[qa_key] = response.choices[0].message.content
-                logger.debug(f"   {qa_key}: {qa_results[qa_key][:50]}...")
+        tasks = [
+            self._run_single_qa(qa_key, qa_prompt, image_base64, max_tokens, temperature)
+            for qa_key, qa_prompt in SECURITY_QA_PROMPTS.items()
+        ]
+        results = await asyncio.gather(*tasks)
+        qa_results = dict(results)
 
-            except Exception as e:
-                logger.error(f"❌ QA {qa_key} failed: {e}")
-                qa_results[qa_key] = f"Error: {str(e)}"
+        for qa_key, qa_text in qa_results.items():
+            logger.debug(f"   {qa_key}: {qa_text[:50]}...")
 
         # QA 결과에서 사고 유형 및 심각도 추출
-        incident_type, severity = self._extract_incident_from_qa(qa_results)
+        incident_type, severity, confidence = await self._extract_incident_from_qa(qa_results)
 
         logger.info(f"✅ QA-based analysis complete: {incident_type} ({severity})")
-        return {
-            "qa_results": qa_results,
-            "incident_type": incident_type,
-            "severity": severity,
-            "confidence": 0.85,
-        }
+        try:
+            return IncidentAnalysis(
+                qa_results=QAResult.model_validate(qa_results),
+                incident_type=incident_type,
+                severity=severity,
+                confidence=confidence,
+            )
+        except ValidationError as e:
+            logger.warning(f"⚠️ Failed to build IncidentAnalysis model, fallback to dict: {e}")
+            return {
+                "qa_results": qa_results,
+                "incident_type": incident_type.value,
+                "severity": severity.value,
+                "confidence": confidence,
+            }
 
     async def analyze_with_incident_detection(
         self,
@@ -604,7 +630,7 @@ JSON 형식으로 답변하세요:
         max_tokens: int = 1024,
         temperature: float = 0.7,
         image_base64: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> SecurityReport | Dict[str, Any]:
         """
         전체 보안 분석 파이프라인: QA 분석 → 사고 감지 → 보고서 생성
 
@@ -640,7 +666,7 @@ JSON 형식으로 답변하세요:
             image_base64 = self._encode_image(image_path)
         else:
             # API에서 받은 이미지도 리사이즈
-            image_base64 = self._resize_image_base64(image_base64, max_size=512)
+            image_base64 = self._resize_image_base64(image_base64)
 
         logger.info(f"📋 Generating security report: {location} at {timestamp}")
 
@@ -652,9 +678,14 @@ JSON 형식으로 답변하세요:
         )
 
         # Step 2: QA 결과 추출
-        qa_results = qa_result.get("qa_results", {})
-        incident_type = qa_result.get("incident_type", "NORMAL")
-        severity = qa_result.get("severity", "INFO")
+        if isinstance(qa_result, IncidentAnalysis):
+            qa_results = qa_result.qa_results.model_dump()
+            incident_type = qa_result.incident_type.value
+            severity = qa_result.severity.value
+        else:
+            qa_results = qa_result.get("qa_results", {})
+            incident_type = qa_result.get("incident_type", "정상")
+            severity = qa_result.get("severity", "정보")
 
         # Step 3: 보고서 생성 프롬프트
         report_prompt = create_security_prompt(
@@ -686,7 +717,7 @@ JSON 형식으로 답변하세요:
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            raw_report = response.choices[0].message.content
+            raw_report = response.choices[0].message.content or ""
         except Exception as e:
             logger.error(f"❌ Report generation VLM call failed: {e}")
             # VLM 호출 실패 시 QA 결과 기반 기본 보고서 생성
@@ -740,51 +771,159 @@ VLM 서버 연결 오류로 자동 보고서가 생성되었습니다. 수동 �
 
         logger.info(f"✅ Security report generated: {report_id}")
 
-        return {
-            "report_id": report_id,
-            "qa_results": qa_results,
-            "incident_type": incident_type,
-            "severity": severity,
-            "raw_report": raw_report,
-            "markdown_report": formatted_report,
-            "metadata": metadata.to_dict(),
-        }
+        try:
+            return SecurityReport(
+                report_id=report_id,
+                qa_results=QAResult.model_validate(qa_results),
+                incident_type=incident_type,
+                severity=severity,
+                raw_report=raw_report,
+                markdown_report=formatted_report,
+                metadata=metadata.to_dict(),
+            )
+        except ValidationError as e:
+            logger.warning(f"⚠️ Failed to build SecurityReport model, fallback to dict: {e}")
+            return {
+                "report_id": report_id,
+                "qa_results": qa_results,
+                "incident_type": incident_type,
+                "severity": severity,
+                "raw_report": raw_report,
+                "markdown_report": formatted_report,
+                "metadata": metadata.to_dict(),
+            }
 
-    def _extract_incident_from_qa(self, qa_results: Dict[str, str]) -> tuple:
-        """QA 결과로부터 사고 유형과 심각도 추출"""
+    def _extract_json_payload(self, text: str) -> str:
+        candidate = text.strip()
+        if not candidate:
+            return "{}"
+
+        try:
+            decoded = json.loads(candidate)
+            if isinstance(decoded, dict):
+                return candidate
+        except Exception:
+            pass
+
+        decoder = json.JSONDecoder()
+        for idx, ch in enumerate(candidate):
+            if ch != "{":
+                continue
+            try:
+                decoded, _ = decoder.raw_decode(candidate[idx:])
+                if isinstance(decoded, dict):
+                    return json.dumps(decoded, ensure_ascii=False)
+            except Exception:
+                continue
+        return candidate
+
+    def _normalize_incident_type(self, value: str) -> IncidentType:
+        raw = (value or "").strip().lower()
+        mapping = {
+            "정상": IncidentType.NORMAL,
+            "normal": IncidentType.NORMAL,
+            "폭력": IncidentType.VIOLENCE,
+            "violence": IncidentType.VIOLENCE,
+            "fighting": IncidentType.VIOLENCE,
+            "넘어짐/낙상": IncidentType.FALL,
+            "fall": IncidentType.FALL,
+            "falling": IncidentType.FALL,
+            "침입": IncidentType.INTRUSION,
+            "intrusion": IncidentType.INTRUSION,
+            "위협행위": IncidentType.THREAT,
+            "threat": IncidentType.THREAT,
+            "비정상행동": IncidentType.ABNORMAL,
+            "abnormal": IncidentType.ABNORMAL,
+            "기물파손": IncidentType.VANDALISM,
+            "vandalism": IncidentType.VANDALISM,
+            "화재": IncidentType.FIRE,
+            "fire": IncidentType.FIRE,
+            "배회": IncidentType.LOITERING,
+            "loitering": IncidentType.LOITERING,
+        }
+        return mapping.get(raw, IncidentType.ABNORMAL)
+
+    def _normalize_severity(self, value: str) -> SeverityLevel:
+        raw = (value or "").strip().lower()
+        mapping = {
+            "정보": SeverityLevel.INFO,
+            "info": SeverityLevel.INFO,
+            "낮음": SeverityLevel.LOW,
+            "low": SeverityLevel.LOW,
+            "중간": SeverityLevel.MEDIUM,
+            "medium": SeverityLevel.MEDIUM,
+            "높음": SeverityLevel.HIGH,
+            "high": SeverityLevel.HIGH,
+            "매우높음": SeverityLevel.CRITICAL,
+            "critical": SeverityLevel.CRITICAL,
+        }
+        return mapping.get(raw, SeverityLevel.MEDIUM)
+
+    def _keyword_based_classification(self, qa_results: Dict[str, str]) -> tuple[IncidentType, SeverityLevel, float]:
         q1_detection = qa_results.get("q1_detection", "").lower()
         q2_classification = qa_results.get("q2_classification", "").lower()
 
-        # Q1: 폭력/범죄 활동 감지
         has_incident = any(
             keyword in q1_detection
             for keyword in ["yes", "violent", "criminal", "abnormal", "unusual"]
         )
 
         if not has_incident or "no" in q1_detection[:20]:
-            return ("정상", "정보")
+            return (IncidentType.NORMAL, SeverityLevel.INFO, 0.7)
 
-        # Q2: 사고 유형 분류
-        incident_type = "비정상행동"
-        severity = "중간"
+        incident_type = IncidentType.ABNORMAL
+        severity = SeverityLevel.MEDIUM
 
         if any(kw in q2_classification for kw in ["fight", "assault", "violence", "attack"]):
-            incident_type = "폭력"
-            severity = "매우높음"
+            incident_type = IncidentType.VIOLENCE
+            severity = SeverityLevel.CRITICAL
         elif any(kw in q2_classification for kw in ["fall", "collapse", "slip"]):
-            incident_type = "넘어짐/낙상"
-            severity = "높음"
+            incident_type = IncidentType.FALL
+            severity = SeverityLevel.HIGH
         elif any(kw in q2_classification for kw in ["intrusion", "trespass", "unauthorized"]):
-            incident_type = "침입"
-            severity = "높음"
+            incident_type = IncidentType.INTRUSION
+            severity = SeverityLevel.HIGH
         elif any(kw in q2_classification for kw in ["threat", "weapon", "suspicious"]):
-            incident_type = "위협행위"
-            severity = "높음"
+            incident_type = IncidentType.THREAT
+            severity = SeverityLevel.HIGH
         elif any(kw in q2_classification for kw in ["abnormal", "unusual", "strange"]):
-            incident_type = "비정상행동"
-            severity = "중간"
+            incident_type = IncidentType.ABNORMAL
+            severity = SeverityLevel.MEDIUM
 
-        return (incident_type, severity)
+        return (incident_type, severity, 0.75)
+
+    async def _extract_incident_from_qa(
+        self,
+        qa_results: Dict[str, str],
+    ) -> tuple[IncidentType, SeverityLevel, float]:
+        try:
+            prompt = f"""Based on these security analysis results, classify the incident:
+Q1 (Detection): {qa_results.get('q1_detection', 'N/A')}
+Q2 (Classification): {qa_results.get('q2_classification', 'N/A')}
+
+Respond with JSON: {{"incident_type": "...", "severity": "...", "confidence": 0.0-1.0}}
+Valid types: 정상, 폭력, 넘어짐/낙상, 침입, 위협행위, 비정상행동, 기물파손, 화재, 배회
+Valid severities: 정보, 낮음, 중간, 높음, 매우높음"""
+
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=128,
+                temperature=0.1,
+            )
+            text = response.choices[0].message.content or ""
+            payload = self._extract_json_payload(text)
+            data = json.loads(payload)
+
+            incident_type = self._normalize_incident_type(str(data.get("incident_type", "비정상행동")))
+            severity = self._normalize_severity(str(data.get("severity", "중간")))
+            confidence = float(data.get("confidence", 0.8))
+            confidence = max(0.0, min(1.0, confidence))
+
+            return incident_type, severity, confidence
+        except Exception as e:
+            logger.warning(f"⚠️ LLM classification failed, fallback to keyword matching: {e}")
+            return self._keyword_based_classification(qa_results)
 
 
 # ============================================
