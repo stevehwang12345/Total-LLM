@@ -75,9 +75,11 @@ class VLMAnalyzer:
     def __init__(
         self,
         base_url: str = "http://localhost:9000/v1",
-        model_name: str = "qwen-vl",
+        model_name: str = "Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4",
         max_tokens: int = 2048,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        client: Optional[AsyncOpenAI] = None,
+        enable_thinking: Optional[bool] = None,
     ):
         """
         Args:
@@ -85,19 +87,30 @@ class VLMAnalyzer:
             model_name: VLM 모델 이름
             max_tokens: 최대 토큰 수
             temperature: 생성 온도
+            client: 외부에서 주입한 AsyncOpenAI 클라이언트(선택)
+            enable_thinking: Qwen3 계열 thinking 모드 활성화 여부(선택)
         """
-        self.client = AsyncOpenAI(
-            base_url=base_url,
-            api_key="dummy"  # vLLM doesn't require API key
-        )
+        self.client = client or AsyncOpenAI(base_url=base_url, api_key="dummy")
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.enable_thinking = enable_thinking
         settings = get_settings()
         self.max_image_size = settings.vlm.max_image_size
         self.jpeg_quality = settings.vlm.jpeg_quality
 
-        logger.info(f"✅ VLMAnalyzer initialized (model={model_name})")
+        logger.info(
+            "✅ VLMAnalyzer initialized (model=%s, shared_client=%s, enable_thinking=%s)",
+            model_name,
+            client is not None,
+            enable_thinking,
+        )
+
+    def _completion_options(self, max_tokens: int, temperature: float) -> Dict[str, Any]:
+        options: Dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
+        if self.enable_thinking is not None:
+            options["extra_body"] = {"enable_thinking": self.enable_thinking}
+        return options
 
     # ============================================
     # 단일 이미지 분석
@@ -150,8 +163,7 @@ class VLMAnalyzer:
                         ]
                     }
                 ],
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
+                **self._completion_options(self.max_tokens, self.temperature),
             )
 
             analysis = response.choices[0].message.content or ""
@@ -205,8 +217,7 @@ class VLMAnalyzer:
                         "content": f"{base_prompt}\n\n{analysis_text}"
                     }
                 ],
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
+                **self._completion_options(self.max_tokens, self.temperature),
             )
 
             summary = response.choices[0].message.content or ""
@@ -474,8 +485,7 @@ class VLMAnalyzer:
                         ],
                     },
                 ],
-                max_tokens=max_tokens,
-                temperature=temperature,
+                **self._completion_options(max_tokens, temperature),
             )
             return qa_key, response.choices[0].message.content or ""
         except Exception as e:
@@ -714,8 +724,7 @@ class VLMAnalyzer:
                         ]
                     }
                 ],
-                max_tokens=max_tokens,
-                temperature=temperature
+                **self._completion_options(max_tokens, temperature),
             )
             raw_report = response.choices[0].message.content or ""
         except Exception as e:
@@ -908,8 +917,7 @@ Valid severities: 정보, 낮음, 중간, 높음, 매우높음"""
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=128,
-                temperature=0.1,
+                **self._completion_options(128, 0.1),
             )
             text = response.choices[0].message.content or ""
             payload = self._extract_json_payload(text)

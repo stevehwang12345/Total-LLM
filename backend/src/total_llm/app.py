@@ -64,7 +64,15 @@ async def lifespan(app: FastAPI):
 
     app.state.vlm_analyzer = None
     try:
-        app.state.vlm_analyzer = VLMAnalyzer(base_url=s.vlm.base_url, model_name=s.vlm.model_name, max_tokens=s.vlm.max_tokens, temperature=s.vlm.temperature)
+        use_shared_client = s.vlm.base_url == s.llm.base_url and s.vlm.model_name == s.llm.model_name
+        vlm_client = app.state.llm_client if use_shared_client else AsyncOpenAI(base_url=s.vlm.base_url, api_key="dummy")
+        app.state.vlm_analyzer = VLMAnalyzer(
+            base_url=s.vlm.base_url,
+            model_name=s.vlm.model_name,
+            max_tokens=s.vlm.max_tokens,
+            temperature=s.vlm.temperature,
+            client=vlm_client,
+        )
     except Exception as e:
         logger.warning(f"VLM Analyzer init failed: {e}")
 

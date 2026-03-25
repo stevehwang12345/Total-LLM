@@ -5,7 +5,7 @@
 #   - Backend: 9002 (FastAPI)
 #   - Qdrant: 6333 (HTTP), 6334 (gRPC)
 #   - Redis: 6379
-#   - vLLM: 9000 (별도 실행)
+#   - vLLM: 9000
 
 services:
   # =============================================================================
@@ -51,12 +51,17 @@ services:
     ports:
       - "9002:9002"
     depends_on:
+      vllm:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
     environment:
-      # LLM Configuration (vllm-qwen2.5-14b must be connected to total-llm-network)
-      - VLLM_BASE_URL=http://vllm-qwen2.5-14b:9000/v1
-      - LLM_MODEL_NAME=Qwen/Qwen2.5-14B-Instruct-AWQ
+      # LLM/VLM Configuration (unified Qwen3.5 endpoint)
+      - VLLM_BASE_URL=http://vllm:9000/v1
+      - LLM_MODEL_NAME=Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
+      - VLLM_MODEL_NAME=Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
+      - VLM_BASE_URL=http://vllm:9000/v1
+      - VLM_MODEL_NAME=Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
       - LLM_TEMPERATURE=0.7
       - LLM_MAX_TOKENS=4096
       # Embedding
@@ -76,8 +81,8 @@ services:
       - LOG_PATH=${LOG_PATH:-/app/logs}
       - ALARM_IMAGES_PATH=${ALARM_IMAGES_PATH:-/app/data/alarms}
       - REPORT_PATH=${REPORT_PATH:-/app/data/reports}
-      # Vision Model (Local)
-      - VISION_MODEL_ID=Qwen/Qwen2-VL-7B-Instruct
+      # Vision Model (optional split deployment can override VLM_BASE_URL/VLM_MODEL_NAME)
+      - VISION_MODEL_ID=Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
       - VISION_SIMULATION_MODE=true
     volumes:
       - ${BACKEND_CONFIG_PATH:-./backend/config}:/app/config:ro
@@ -104,6 +109,46 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # =============================================================================
+  # vLLM - Unified Qwen3.5 Model Server
+  # =============================================================================
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: total-llm-vllm
+    command: >
+      --model Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
+      --served-model-name Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4
+      --host 0.0.0.0
+      --port 9000
+      --max-model-len 32768
+      --gpu-memory-utilization 0.85
+      --quantization gptq
+      --dtype float16
+      --trust-remote-code
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --limit-mm-per-prompt image=4
+      --chat-template-content-format openai
+      --reasoning-parser qwen3
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+    networks:
+      - total-llm-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/v1/models', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
 
   # =============================================================================
   # Qdrant Vector Database
@@ -223,5 +268,5 @@ networks:
 # 볼륨 포함 삭제:
 #   docker-compose down -v
 #
-# 참고: vLLM은 GPU 자원 관리를 위해 별도로 실행
-#   ./services/vllm/run_vllm.sh
+# 참고: GPU 환경에서는 docker compose 대신 scripts도 사용 가능
+#   ./services/vllm/run_qwen3.5_27b.sh

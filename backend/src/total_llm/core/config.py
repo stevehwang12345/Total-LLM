@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,8 +20,8 @@ class LLMSettings(BaseAppSettings):
     provider: str = Field(default="vllm", validation_alias="VLLM_PROVIDER")
     base_url: str = Field(default="http://localhost:9000/v1", validation_alias="VLLM_BASE_URL")
     model_name: str = Field(
-        default="Qwen/Qwen2.5-14B-Instruct-AWQ",
-        validation_alias="VLLM_MODEL_NAME",
+        default="Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4",
+        validation_alias=AliasChoices("VLLM_MODEL_NAME", "LLM_MODEL_NAME"),
     )
     temperature: float = Field(default=0.7, validation_alias="VLLM_TEMPERATURE")
     max_tokens: int = Field(default=4096, validation_alias="VLLM_MAX_TOKENS")
@@ -31,15 +31,15 @@ class LLMSettings(BaseAppSettings):
 
 class VLMSettings(BaseAppSettings):
     provider: str = Field(default="vllm", validation_alias="VLM_PROVIDER")
-    base_url: str = Field(default="http://localhost:9001/v1", validation_alias="VLM_BASE_URL")
+    base_url: str = Field(default="http://localhost:9000/v1", validation_alias="VLM_BASE_URL")
     model_name: str = Field(
-        default="Qwen/Qwen2.5-VL-7B-Instruct",
+        default="Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4",
         validation_alias="VLM_MODEL_NAME",
     )
     temperature: float = Field(default=0.7, validation_alias="VLM_TEMPERATURE")
     max_tokens: int = Field(default=1024, validation_alias="VLM_MAX_TOKENS")
-    max_image_size: int = Field(default=512, validation_alias="VLM_MAX_IMAGE_SIZE")
-    jpeg_quality: int = Field(default=85, validation_alias="VLM_JPEG_QUALITY")
+    max_image_size: int = Field(default=1280, validation_alias="VLM_MAX_IMAGE_SIZE")
+    jpeg_quality: int = Field(default=90, validation_alias="VLM_JPEG_QUALITY")
     simulation_mode: bool = Field(default=False, validation_alias="VLM_SIMULATION_MODE")
 
 

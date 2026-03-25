@@ -18,9 +18,10 @@ def _load_config() -> dict:
         config_path = Path(__file__).parent / "config.yaml"
         if config_path.exists():
             with open(config_path, encoding='utf-8') as f:
-                _config_cache = yaml.safe_load(f)
+                _config_cache = yaml.safe_load(f) or {}
         else:
             _config_cache = {}
+    assert _config_cache is not None
     return _config_cache
 
 
@@ -30,13 +31,13 @@ def get_llm_model_name() -> str:
     우선순위:
     1. LLM_MODEL_NAME 환경변수
     2. config.yaml의 llm.model_name
-    3. 기본값: 'Qwen/Qwen2.5-14B-Instruct-AWQ'
+    3. 기본값: 'Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4'
     """
     env_model = os.environ.get("LLM_MODEL_NAME")
     if env_model:
         return env_model
     config = _load_config()
-    return config.get('llm', {}).get('model_name', 'Qwen/Qwen2.5-14B-Instruct-AWQ')
+    return config.get('llm', {}).get('model_name', 'Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4')
 
 
 def get_llm_base_url() -> str:
@@ -60,13 +61,13 @@ def get_vlm_model_name() -> str:
     우선순위:
     1. VLM_MODEL_NAME 환경변수
     2. config.yaml의 vlm.model_name
-    3. 기본값: 'Qwen/Qwen2-VL-7B-Instruct'
+    3. 기본값: 'Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4'
     """
     env_model = os.environ.get("VLM_MODEL_NAME")
     if env_model:
         return env_model
     config = _load_config()
-    return config.get('vlm', {}).get('model_name', 'Qwen/Qwen2-VL-7B-Instruct')
+    return config.get('vlm', {}).get('model_name', 'Qwen/Qwen3.5-27B-Instruct-GPTQ-Int4')
 
 
 def get_vlm_base_url() -> str:
@@ -74,14 +75,18 @@ def get_vlm_base_url() -> str:
 
     우선순위:
     1. VLM_BASE_URL 환경변수
-    2. config.yaml의 vlm.base_url
-    3. 기본값: 'http://localhost:9001/v1'
+    2. VLLM_BASE_URL 환경변수
+    3. config.yaml의 vlm.base_url
+    4. 기본값: 'http://localhost:9000/v1'
     """
     env_url = os.environ.get("VLM_BASE_URL")
     if env_url:
         return env_url
+    llm_base_url = os.environ.get("VLLM_BASE_URL")
+    if llm_base_url:
+        return llm_base_url
     config = _load_config()
-    return config.get('vlm', {}).get('base_url', 'http://localhost:9001/v1')
+    return config.get('vlm', {}).get('base_url', 'http://localhost:9000/v1')
 
 
 def clear_config_cache() -> None:
