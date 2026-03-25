@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import logging
+from importlib import import_module
 from contextlib import asynccontextmanager
 
 import asyncpg
@@ -95,7 +96,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Security Monitoring System API", description="보안 관제 시스템 백엔드 API", version="1.0.0", lifespan=lifespan)
 register_exception_handlers(app)
 settings = get_settings()
-app.add_middleware(CORSMiddleware, allow_origins=settings.api.cors_origins or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+middleware_module = import_module("total_llm.core.middleware")
+RequestIDMiddleware = middleware_module.RequestIDMiddleware
+TimingMiddleware = middleware_module.TimingMiddleware
+SecurityHeadersMiddleware = middleware_module.SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TimingMiddleware)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(CORSMiddleware, allow_origins=settings.api.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 for r in (security_chat_router, alarm_router, device_router, report_router, log_router, image_router, document_router, control_router, system_router, auth_router, generator_router):
     app.include_router(r)
 app.mount("/api/images", StaticFiles(directory=settings.security.alarm_images.storage_path), name="alarm_images")
