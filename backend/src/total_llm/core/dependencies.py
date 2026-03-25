@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from total_llm.services.report_generator import ReportGenerator
     from total_llm.services.vlm_analyzer import VLMAnalyzer
     from total_llm.tools.rag_tool import RAGTool
+    from total_llm.services.control.system_controller import SystemController
+    from total_llm.services.control.network_discovery import NetworkDiscoveryService
+    from total_llm.services.control.device_registry import DeviceRegistry as ControlDeviceRegistry
+    from total_llm.services.control.connection_health import ConnectionHealthService
+    from total_llm.services.control.zone_manager import ZoneManager
+    from total_llm.services.control.audit_logger import AuditLogger
+    from total_llm.services.control.rate_limiter import RateLimiter
+    from total_llm.services.control.credential_manager import CredentialManager
+    from total_llm.services.api_generator import DeviceAnalyzer
+    from total_llm.services.api_generator.review import ReviewWorkflow, AdapterDeployer
 
 
 def get_db_pool(request: Request) -> "Pool":
@@ -89,6 +99,153 @@ def get_settings() -> Settings:
     return _get_settings()
 
 
+def get_control_system_controller(request: Request) -> "SystemController":
+    from total_llm.services.control.system_controller import SystemController
+
+    controller = getattr(request.app.state, "control_system_controller", None)
+    if controller is None:
+        settings = get_settings()
+        controller = SystemController(
+            model_name=settings.llm.model_name,
+            vllm_base_url=settings.llm.base_url,
+            simulation_mode=settings.device_control.default_mode == "simulation",
+        )
+        request.app.state.control_system_controller = controller
+    return controller
+
+
+def get_control_network_discovery(request: Request) -> "NetworkDiscoveryService":
+    from total_llm.services.control.network_discovery import NetworkDiscoveryService
+
+    discovery = getattr(request.app.state, "control_network_discovery", None)
+    if discovery is None:
+        discovery = NetworkDiscoveryService()
+        request.app.state.control_network_discovery = discovery
+    return discovery
+
+
+def get_control_device_registry(request: Request) -> "ControlDeviceRegistry":
+    from total_llm.services.control.device_registry import DeviceRegistry
+
+    registry = getattr(request.app.state, "control_device_registry", None)
+    if registry is None:
+        registry = DeviceRegistry()
+        request.app.state.control_device_registry = registry
+    return registry
+
+
+def get_control_health_service(request: Request) -> "ConnectionHealthService":
+    from total_llm.services.control.connection_health import ConnectionHealthService
+
+    service = getattr(request.app.state, "control_health_service", None)
+    if service is None:
+        service = ConnectionHealthService()
+        request.app.state.control_health_service = service
+    return service
+
+
+def get_control_zone_manager(request: Request) -> "ZoneManager":
+    from total_llm.services.control.zone_manager import ZoneManager
+
+    manager = getattr(request.app.state, "control_zone_manager", None)
+    if manager is None:
+        manager = ZoneManager()
+        request.app.state.control_zone_manager = manager
+    return manager
+
+
+def get_control_audit_logger(request: Request) -> "AuditLogger":
+    from total_llm.services.control.audit_logger import AuditLogger
+
+    logger_service = getattr(request.app.state, "control_audit_logger", None)
+    if logger_service is None:
+        logger_service = AuditLogger()
+        request.app.state.control_audit_logger = logger_service
+    return logger_service
+
+
+def get_control_rate_limiter(request: Request) -> "RateLimiter":
+    from total_llm.services.control.rate_limiter import RateLimiter
+
+    limiter = getattr(request.app.state, "control_rate_limiter", None)
+    if limiter is None:
+        limiter = RateLimiter()
+        request.app.state.control_rate_limiter = limiter
+    return limiter
+
+
+def get_control_credential_manager(request: Request) -> "CredentialManager":
+    from total_llm.services.control.credential_manager import CredentialManager
+
+    manager = getattr(request.app.state, "control_credential_manager", None)
+    if manager is None:
+        manager = CredentialManager(key=get_settings().device_credential_key or None)
+        request.app.state.control_credential_manager = manager
+    return manager
+
+
+def get_generator_device_analyzer(request: Request) -> "DeviceAnalyzer":
+    from total_llm.services.api_generator import DeviceAnalyzer
+
+    analyzer = getattr(request.app.state, "generator_device_analyzer", None)
+    if analyzer is None:
+        analyzer = DeviceAnalyzer()
+        request.app.state.generator_device_analyzer = analyzer
+    return analyzer
+
+
+def get_generator_review_workflow(request: Request) -> "ReviewWorkflow":
+    from total_llm.services.api_generator.review import ReviewWorkflow
+
+    workflow = getattr(request.app.state, "generator_review_workflow", None)
+    if workflow is None:
+        workflow = ReviewWorkflow()
+        request.app.state.generator_review_workflow = workflow
+    return workflow
+
+
+def get_generator_deployer(request: Request) -> "AdapterDeployer":
+    from total_llm.services.api_generator.review import AdapterDeployer
+
+    deployer = getattr(request.app.state, "generator_deployer", None)
+    if deployer is None:
+        deployer = AdapterDeployer()
+        request.app.state.generator_deployer = deployer
+    return deployer
+
+
+def get_generator_analyses(request: Request) -> dict[str, Any]:
+    analyses = getattr(request.app.state, "generator_analyses", None)
+    if analyses is None:
+        analyses = {}
+        request.app.state.generator_analyses = analyses
+    return analyses
+
+
+def get_generator_specs(request: Request) -> dict[str, Any]:
+    specs = getattr(request.app.state, "generator_specs", None)
+    if specs is None:
+        specs = {}
+        request.app.state.generator_specs = specs
+    return specs
+
+
+def get_generator_artifacts(request: Request) -> dict[str, Any]:
+    artifacts = getattr(request.app.state, "generator_artifacts", None)
+    if artifacts is None:
+        artifacts = {}
+        request.app.state.generator_artifacts = artifacts
+    return artifacts
+
+
+def get_system_server_processes(request: Request) -> dict[str, Any]:
+    processes = getattr(request.app.state, "system_server_processes", None)
+    if processes is None:
+        processes = {"llm": None, "vlm": None}
+        request.app.state.system_server_processes = processes
+    return processes
+
+
 DbPoolDep = Annotated[Any, Depends(get_db_pool)]
 RAGServiceDep = Annotated[Any, Depends(get_rag_service)]
 LLMClientDep = Annotated[Any, Depends(get_llm_client)]
@@ -103,3 +260,18 @@ CacheServiceDep = Annotated[Any, Depends(get_cache_service)]
 ConversationServiceDep = Annotated[Any, Depends(get_conversation_service)]
 RAGToolDep = Annotated[Any, Depends(get_rag_tool)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+ControlSystemControllerDep = Annotated[Any, Depends(get_control_system_controller)]
+ControlNetworkDiscoveryDep = Annotated[Any, Depends(get_control_network_discovery)]
+ControlDeviceRegistryDep = Annotated[Any, Depends(get_control_device_registry)]
+ControlHealthServiceDep = Annotated[Any, Depends(get_control_health_service)]
+ControlZoneManagerDep = Annotated[Any, Depends(get_control_zone_manager)]
+ControlAuditLoggerDep = Annotated[Any, Depends(get_control_audit_logger)]
+ControlRateLimiterDep = Annotated[Any, Depends(get_control_rate_limiter)]
+ControlCredentialManagerDep = Annotated[Any, Depends(get_control_credential_manager)]
+GeneratorDeviceAnalyzerDep = Annotated[Any, Depends(get_generator_device_analyzer)]
+GeneratorReviewWorkflowDep = Annotated[Any, Depends(get_generator_review_workflow)]
+GeneratorDeployerDep = Annotated[Any, Depends(get_generator_deployer)]
+GeneratorAnalysesDep = Annotated[Any, Depends(get_generator_analyses)]
+GeneratorSpecsDep = Annotated[Any, Depends(get_generator_specs)]
+GeneratorArtifactsDep = Annotated[Any, Depends(get_generator_artifacts)]
+SystemServerProcessesDep = Annotated[Any, Depends(get_system_server_processes)]

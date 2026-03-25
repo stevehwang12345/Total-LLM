@@ -13,7 +13,7 @@ import struct
 import re
 import logging
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 import httpx
 
@@ -46,21 +46,13 @@ class DiscoveredDevice:
     model: Optional[str] = None
     mac_address: Optional[str] = None
     status: DeviceStatus = DeviceStatus.ONLINE
-    ports: Dict[str, bool] = None  # port_name: is_open
-    protocols: List[str] = None  # supported protocols
+    ports: Dict[str, bool] = field(default_factory=dict)  # port_name: is_open
+    protocols: List[str] = field(default_factory=list)  # supported protocols
     web_interface: Optional[str] = None
     rtsp_url: Optional[str] = None
     onvif_supported: bool = False
     auth_required: bool = False
-    additional_info: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.ports is None:
-            self.ports = {}
-        if self.protocols is None:
-            self.protocols = []
-        if self.additional_info is None:
-            self.additional_info = {}
+    additional_info: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         result = asdict(self)
@@ -213,7 +205,7 @@ class NetworkDiscoveryService:
                         if redirect_response.status_code == 200:
                             content = redirect_response.text
                             info["content"] = content[:500]
-                    except:
+                    except Exception:
                         pass
 
                 # 타이틀 추출
@@ -251,9 +243,9 @@ class NetworkDiscoveryService:
                         # 401도 ONVIF 지원으로 간주 (인증 필요)
                         if response.status_code in (200, 401, 405):
                             return True
-                    except:
+                    except Exception:
                         pass
-        except:
+        except Exception:
             pass
 
         return False

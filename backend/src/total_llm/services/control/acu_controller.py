@@ -12,6 +12,7 @@ from enum import Enum
 import logging
 import asyncio
 import aiohttp
+from total_llm.core.interfaces import DeviceController
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class AccessPermission:
     granted_by: str = "system"
 
 
-class ACUController:
+class ACUController(DeviceController):
     """
     ACU 출입통제 제어기
 
@@ -615,6 +616,22 @@ class ACUController:
         except asyncio.TimeoutError:
             logger.error(f"ACU API timeout for {action}")
             raise ConnectionError("ACU API request timeout")
+
+    async def execute_command(self, device_id: str, command: str, **kwargs: Any) -> Dict[str, Any]:
+        if command == "unlock_door":
+            return await self.unlock_door(device_id, duration=kwargs.get("duration", 5), user_id=kwargs.get("user_id"))
+        if command == "lock_door":
+            return await self.lock_door(device_id, user_id=kwargs.get("user_id"))
+        if command == "get_status":
+            return await self.get_door_status(device_id)
+        return {
+            "success": False,
+            "door_id": device_id,
+            "error": f"지원하지 않는 명령입니다: {command}",
+        }
+
+    async def get_status(self, device_id: str) -> Dict[str, Any]:
+        return await self.get_door_status(device_id)
 
 
 # 동기 버전 래퍼 (필요 시 사용)

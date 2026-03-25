@@ -14,6 +14,7 @@ import asyncio
 from pathlib import Path
 
 import yaml
+from total_llm.core.interfaces import DeviceController
 
 from .adapters import DeviceAdapterFactory, DeviceCommand, DeviceResponse
 from .adapters.cctv.base import (
@@ -73,7 +74,7 @@ class CameraInfo:
     motion_detection: bool = False
     motion_sensitivity: str = "medium"
     # Adapter 관련 정보
-    adapter: Optional[BaseCCTVAdapter] = None
+    adapter: Optional[Any] = None
     is_real_device: bool = False
     ip: str = ""
     port: int = 80
@@ -103,7 +104,7 @@ def _load_device_control_config() -> Dict[str, Any]:
         return {}
 
 
-class CCTVController:
+class CCTVController(DeviceController):
     """
     CCTV 영상감시 제어기
 
@@ -294,7 +295,7 @@ class CCTVController:
         }
         return name_to_id.get(camera_id, camera_id)
 
-    def _get_adapter_for_camera(self, camera: CameraInfo) -> BaseCCTVAdapter:
+    def _get_adapter_for_camera(self, camera: CameraInfo) -> Any:
         """카메라에 대한 어댑터 반환 (없으면 생성)"""
         if camera.adapter:
             return camera.adapter
@@ -831,6 +832,26 @@ class CCTVController:
         self._mode = mode
         self._adapter_factory.set_mode(mode)
         logger.info(f"CCTV Controller mode changed to '{mode}'")
+
+    async def execute_command(self, device_id: str, command: str, **kwargs: Any) -> Dict[str, Any]:
+        if command == "move_camera":
+            return await self.move_camera(device_id, pan=kwargs.get("pan"), tilt=kwargs.get("tilt"), zoom=kwargs.get("zoom"))
+        if command == "start_recording":
+            return await self.start_recording(device_id, duration=kwargs.get("duration", 0), quality=kwargs.get("quality", "high"))
+        if command == "stop_recording":
+            return await self.stop_recording(device_id)
+        if command == "capture_snapshot":
+            return await self.capture_snapshot(device_id, resolution=kwargs.get("resolution", "1080p"))
+        if command == "get_status":
+            return await self.get_camera_status(device_id)
+        return {
+            "success": False,
+            "camera_id": device_id,
+            "error": f"지원하지 않는 명령입니다: {command}",
+        }
+
+    async def get_status(self, device_id: str) -> Dict[str, Any]:
+        return await self.get_camera_status(device_id)
 
 
 # 동기 버전 래퍼

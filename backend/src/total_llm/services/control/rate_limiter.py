@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 from enum import Enum
 from collections import defaultdict
+from total_llm.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +37,38 @@ class RateLimitConfig:
     lockout_seconds: int = 0  # 잠금 시간 (초), 0이면 잠금 없음
 
 
-# 기본 속도 제한 설정
-DEFAULT_LIMITS: Dict[RateLimitType, RateLimitConfig] = {
-    RateLimitType.AUTH_ATTEMPT: RateLimitConfig(
-        max_attempts=5,
-        window_seconds=300,  # 5분
-        lockout_seconds=900,  # 15분 잠금
-    ),
-    RateLimitType.API_REQUEST: RateLimitConfig(
-        max_attempts=100,
-        window_seconds=60,  # 1분
-        lockout_seconds=0,  # 잠금 없음
-    ),
-    RateLimitType.CREDENTIAL_ACCESS: RateLimitConfig(
-        max_attempts=10,
-        window_seconds=60,  # 1분
-        lockout_seconds=300,  # 5분 잠금
-    ),
-    RateLimitType.DEVICE_CONTROL: RateLimitConfig(
-        max_attempts=30,
-        window_seconds=60,  # 1분
-        lockout_seconds=0,  # 잠금 없음
-    ),
-}
+def _build_default_limits() -> Dict[RateLimitType, RateLimitConfig]:
+    settings = get_settings()
+    real_settings = settings.device_control.real
+    security_settings = settings.security.device_control
+
+    auth_attempts = security_settings.max_retry_attempts
+    auth_window = real_settings.connection_timeout * 30
+    auth_lockout = security_settings.rollback_timeout_seconds * 90
+    minute_window = real_settings.command_timeout * 2
+
+    return {
+        RateLimitType.AUTH_ATTEMPT: RateLimitConfig(
+            max_attempts=auth_attempts,
+            window_seconds=auth_window,
+            lockout_seconds=auth_lockout,
+        ),
+        RateLimitType.API_REQUEST: RateLimitConfig(
+            max_attempts=100,
+            window_seconds=minute_window,
+            lockout_seconds=0,
+        ),
+        RateLimitType.CREDENTIAL_ACCESS: RateLimitConfig(
+            max_attempts=10,
+            window_seconds=minute_window,
+            lockout_seconds=real_settings.connection_timeout * 30,
+        ),
+        RateLimitType.DEVICE_CONTROL: RateLimitConfig(
+            max_attempts=30,
+            window_seconds=minute_window,
+            lockout_seconds=0,
+        ),
+    }
 
 
 @dataclass
@@ -78,7 +88,7 @@ class RateLimiter:
     """
 
     def __init__(self, limits: Optional[Dict[RateLimitType, RateLimitConfig]] = None):
-        self.limits = limits or DEFAULT_LIMITS.copy()
+        self.limits = limits or _build_default_limits()
         # 키: (limit_type, identifier), 값: RateLimitState
         self._states: Dict[Tuple[RateLimitType, str], RateLimitState] = defaultdict(RateLimitState)
         self._lock = asyncio.Lock()

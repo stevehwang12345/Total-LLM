@@ -29,6 +29,14 @@ from total_llm.services.api_generator.review import (
     CodeValidator,
     AdapterDeployer,
 )
+from total_llm.core.dependencies import (
+    GeneratorAnalysesDep,
+    GeneratorArtifactsDep,
+    GeneratorDeviceAnalyzerDep,
+    GeneratorDeployerDep,
+    GeneratorReviewWorkflowDep,
+    GeneratorSpecsDep,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,44 +45,6 @@ router = APIRouter(
     tags=["API Generator"],
 )
 
-# ========================================
-# Global Instances (Singleton-like)
-# ========================================
-
-_device_analyzer: Optional[DeviceAnalyzer] = None
-_doc_parser: Optional[DocumentationParser] = None
-_spec_extractor: Optional[APISpecExtractor] = None
-_adapter_generator: Optional[AdapterGenerator] = None
-_schema_generator: Optional[SchemaGenerator] = None
-_endpoint_generator: Optional[EndpointGenerator] = None
-_review_workflow: Optional[ReviewWorkflow] = None
-_deployer: Optional[AdapterDeployer] = None
-
-# In-memory storage (실제 구현에서는 DB 사용)
-_analyses: Dict[str, DeviceAnalysis] = {}
-_specs: Dict[str, ExtractedAPI] = {}
-_artifacts: Dict[str, GeneratedArtifact] = {}
-
-
-def get_device_analyzer() -> DeviceAnalyzer:
-    global _device_analyzer
-    if _device_analyzer is None:
-        _device_analyzer = DeviceAnalyzer()
-    return _device_analyzer
-
-
-def get_review_workflow() -> ReviewWorkflow:
-    global _review_workflow
-    if _review_workflow is None:
-        _review_workflow = ReviewWorkflow()
-    return _review_workflow
-
-
-def get_deployer() -> AdapterDeployer:
-    global _deployer
-    if _deployer is None:
-        _deployer = AdapterDeployer()
-    return _deployer
 
 
 # ========================================
@@ -149,6 +119,9 @@ class DeployRequest(BaseModel):
 async def analyze_device(
     request: DeviceAnalyzeRequest,
     background_tasks: BackgroundTasks,
+    analyzer: GeneratorDeviceAnalyzerDep = None,
+    analyses: GeneratorAnalysesDep = None,
+    specs: GeneratorSpecsDep = None,
 ):
     """
     장치 분석
@@ -159,15 +132,13 @@ async def analyze_device(
     4. API 스펙 추출
     """
     try:
-        analyzer = get_device_analyzer()
-
         # 핑거프린트 생성
         fingerprint = DeviceFingerprint(
             ip=request.ip or "unknown",
-            open_ports=[request.port] if request.port else [],
+            ports=[request.port] if request.port else [],
             http_headers=request.fingerprint.get("headers", {}) if request.fingerprint else {},
-            service_banners=request.fingerprint.get("banners", {}) if request.fingerprint else {},
-            raw_responses=request.fingerprint.get("responses", {}) if request.fingerprint else {},
+            http_response=request.fingerprint.get("responses", "") if request.fingerprint else None,
+            banner=request.fingerprint.get("banners", "") if request.fingerprint else None,
         )
 
         # 장치 분석
@@ -175,7 +146,7 @@ async def analyze_device(
 
         # 분석 결과 저장
         analysis_id = analysis.analysis_id
-        _analyses[analysis_id] = analysis
+        analyses[analysis_id] = analysis
 
         # API 문서 수집 및 스펙 추출 (백그라운드)
         api_spec_dict = None
@@ -190,8 +161,8 @@ async def analyze_device(
 
                 if docs:
                     spec_extractor = APISpecExtractor()
-                    spec = await spec_extractor.extract(docs, analysis)
-                    _specs[analysis_id] = spec
+                    spec = await spec_extractor.extract(analysis, docs)
+                    specs[analysis_id] = spec
                     api_spec_dict = {
                         "base_url": spec.base_url,
                         "auth_type": spec.auth_type,
@@ -223,13 +194,15 @@ async def analyze_device(
 )
 async def get_analysis(
     analysis_id: str = Path(..., description="분석 ID"),
+    analyses: GeneratorAnalysesDep = None,
+    specs: GeneratorSpecsDep = None,
 ):
     """분석 결과 조회"""
-    analysis = _analyses.get(analysis_id)
+    analysis = analyses.get(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Analysis not found: {analysis_id}")
 
-    spec = _specs.get(analysis_id)
+    spec = specs.get(analysis_id)
     api_spec_dict = None
     if spec:
         api_spec_dict = {
@@ -260,7 +233,12 @@ async def get_analysis(
     summary="코드 생성",
     description="분석 결과를 기반으로 코드를 생성합니다.",
 )
-async def generate_code(request: CodeGenerateRequest):
+async def generate_code(
+    request: CodeGenerateRequest,
+    analyses: GeneratorAnalysesDep = None,
+    specs: GeneratorSpecsDep = None,
+    artifacts_store: GeneratorArtifactsDep = None,
+):
     """
     코드 생성
 
@@ -269,19 +247,20 @@ async def generate_code(request: CodeGenerateRequest):
     3. FastAPI 엔드포인트 생성
     4. 테스트 코드 생성 (선택)
     """
-    analysis = _analyses.get(request.analysis_id)
+    analysis = analyses.get(request.analysis_id)
     if not analysis:
         raise HTTPException(
             status_code=404,
             detail=f"Analysis not found: {request.analysis_id}"
         )
 
-    spec = _specs.get(request.analysis_id)
+    spec = specs.get(request.analysis_id)
     if not spec:
         # 기본 스펙 생성
         spec = ExtractedAPI(
             base_url="/api",
             auth_type="basic",
+            content_type="application/json",
             endpoints=[],
         )
 
@@ -293,7 +272,7 @@ async def generate_code(request: CodeGenerateRequest):
         if "adapter" in request.targets:
             generator = AdapterGenerator()
             artifact = generator.generate(analysis, spec, request.analysis_id)
-            _artifacts[f"{generation_id}_adapter"] = artifact
+            artifacts_store[f"{generation_id}_adapter"] = artifact
             artifacts.append({
                 "id": f"{generation_id}_adapter",
                 "type": "adapter",
@@ -306,7 +285,7 @@ async def generate_code(request: CodeGenerateRequest):
         if "schema" in request.targets:
             generator = SchemaGenerator()
             artifact = generator.generate(analysis, spec, request.analysis_id)
-            _artifacts[f"{generation_id}_schema"] = artifact
+            artifacts_store[f"{generation_id}_schema"] = artifact
             artifacts.append({
                 "id": f"{generation_id}_schema",
                 "type": "schema",
@@ -319,7 +298,7 @@ async def generate_code(request: CodeGenerateRequest):
         if "endpoint" in request.targets:
             generator = EndpointGenerator()
             artifact = generator.generate(analysis, spec, request.analysis_id)
-            _artifacts[f"{generation_id}_endpoint"] = artifact
+            artifacts_store[f"{generation_id}_endpoint"] = artifact
             artifacts.append({
                 "id": f"{generation_id}_endpoint",
                 "type": "endpoint",
@@ -345,9 +324,10 @@ async def generate_code(request: CodeGenerateRequest):
 )
 async def get_artifact(
     artifact_id: str = Path(..., description="아티팩트 ID"),
+    artifacts_store: GeneratorArtifactsDep = None,
 ):
     """생성된 아티팩트 조회"""
-    artifact = _artifacts.get(artifact_id)
+    artifact = artifacts_store.get(artifact_id)
     if not artifact:
         raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
 
@@ -368,9 +348,10 @@ async def get_artifact(
 async def preview_artifact(
     artifact_id: str = Path(..., description="아티팩트 ID"),
     lines: int = Query(50, description="미리보기 라인 수"),
+    artifacts_store: GeneratorArtifactsDep = None,
 ):
     """아티팩트 코드 미리보기"""
-    artifact = _artifacts.get(artifact_id)
+    artifact = artifacts_store.get(artifact_id)
     if not artifact:
         raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
 
@@ -394,16 +375,19 @@ async def preview_artifact(
     "/review/submit",
     summary="리뷰 제출",
 )
-async def submit_for_review(request: ReviewSubmitRequest):
+async def submit_for_review(
+    request: ReviewSubmitRequest,
+    artifacts_store: GeneratorArtifactsDep = None,
+    workflow: GeneratorReviewWorkflowDep = None,
+):
     """아티팩트를 리뷰 큐에 제출"""
-    artifact = _artifacts.get(request.artifact_id)
+    artifact = artifacts_store.get(request.artifact_id)
     if not artifact:
         raise HTTPException(
             status_code=404,
             detail=f"Artifact not found: {request.artifact_id}"
         )
 
-    workflow = get_review_workflow()
     review_item = await workflow.submit_for_review(
         artifact,
         auto_validate=request.auto_validate
@@ -422,9 +406,9 @@ async def submit_for_review(request: ReviewSubmitRequest):
 )
 async def get_review_status(
     review_id: str = Path(..., description="리뷰 ID"),
+    workflow: GeneratorReviewWorkflowDep = None,
 ):
     """리뷰 상태 조회"""
-    workflow = get_review_workflow()
     review_item = workflow.get_review(review_id)
 
     if not review_item:
@@ -440,10 +424,9 @@ async def get_review_status(
 async def approve_review(
     review_id: str = Path(..., description="리뷰 ID"),
     request: ReviewActionRequest = Body(...),
+    workflow: GeneratorReviewWorkflowDep = None,
 ):
     """리뷰 승인"""
-    workflow = get_review_workflow()
-
     try:
         review_item = await workflow.approve(
             review_id,
@@ -462,12 +445,11 @@ async def approve_review(
 async def reject_review(
     review_id: str = Path(..., description="리뷰 ID"),
     request: ReviewActionRequest = Body(...),
+    workflow: GeneratorReviewWorkflowDep = None,
 ):
     """리뷰 거부"""
     if not request.comment:
         raise HTTPException(status_code=400, detail="Rejection reason is required")
-
-    workflow = get_review_workflow()
 
     try:
         review_item = await workflow.reject(
@@ -484,9 +466,8 @@ async def reject_review(
     "/review/pending",
     summary="대기 중인 리뷰 목록",
 )
-async def list_pending_reviews():
+async def list_pending_reviews(workflow: GeneratorReviewWorkflowDep = None):
     """대기 중인 리뷰 목록 조회"""
-    workflow = get_review_workflow()
     pending = workflow.get_pending_reviews()
 
     return {
@@ -499,9 +480,8 @@ async def list_pending_reviews():
     "/review/statistics",
     summary="리뷰 통계",
 )
-async def get_review_statistics():
+async def get_review_statistics(workflow: GeneratorReviewWorkflowDep = None):
     """리뷰 통계 조회"""
-    workflow = get_review_workflow()
     return workflow.get_statistics()
 
 
@@ -514,11 +494,12 @@ async def get_review_statistics():
     summary="배포",
     description="승인된 아티팩트를 시스템에 배포합니다.",
 )
-async def deploy_artifact(request: DeployRequest):
+async def deploy_artifact(
+    request: DeployRequest,
+    workflow: GeneratorReviewWorkflowDep = None,
+    deployer: GeneratorDeployerDep = None,
+):
     """아티팩트 배포"""
-    workflow = get_review_workflow()
-    deployer = get_deployer()
-
     review_item = workflow.get_review(request.review_id)
     if not review_item:
         raise HTTPException(status_code=404, detail=f"Review not found: {request.review_id}")
@@ -545,9 +526,8 @@ async def deploy_artifact(request: DeployRequest):
     "/deployed",
     summary="배포된 어댑터 목록",
 )
-async def list_deployed_adapters():
+async def list_deployed_adapters(deployer: GeneratorDeployerDep = None):
     """배포된 어댑터 목록 조회"""
-    deployer = get_deployer()
     adapters = deployer.get_deployed_adapters()
 
     return {
@@ -564,14 +544,20 @@ async def list_deployed_adapters():
     "/pipeline/status",
     summary="파이프라인 상태",
 )
-async def get_pipeline_status():
+async def get_pipeline_status(
+    analyses: GeneratorAnalysesDep = None,
+    specs: GeneratorSpecsDep = None,
+    artifacts_store: GeneratorArtifactsDep = None,
+    workflow: GeneratorReviewWorkflowDep = None,
+    deployer: GeneratorDeployerDep = None,
+):
     """현재 파이프라인 상태 조회"""
     return {
-        "analyses_count": len(_analyses),
-        "specs_count": len(_specs),
-        "artifacts_count": len(_artifacts),
-        "pending_reviews": len(get_review_workflow().get_pending_reviews()),
-        "deployed_adapters": len(get_deployer().get_deployed_adapters()),
+        "analyses_count": len(analyses),
+        "specs_count": len(specs),
+        "artifacts_count": len(artifacts_store),
+        "pending_reviews": len(workflow.get_pending_reviews()),
+        "deployed_adapters": len(deployer.get_deployed_adapters()),
         "status": "running",
         "timestamp": datetime.now().isoformat(),
     }

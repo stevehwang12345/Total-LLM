@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime
+from total_llm.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,7 @@ class CredentialManager:
 
     def _get_key_file_path(self) -> Path:
         """키 파일 경로 반환"""
-        # data 디렉토리 내에 저장
-        base_path = Path(__file__).parent.parent.parent.parent / "data" / "device_registry"
+        base_path = Path(get_settings().paths.data_path) / "device_registry"
         return base_path / ".credential_key"
 
     def _save_key_to_file(self, key: bytes, key_file: Path):

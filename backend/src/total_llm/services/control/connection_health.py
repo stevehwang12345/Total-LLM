@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any, List, Callable
 import httpx
+from total_llm.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -168,9 +169,9 @@ class ConnectionHealthService:
 
     def __init__(
         self,
-        max_retry_attempts: int = 5,
-        initial_retry_delay: float = 1.0,
-        max_retry_delay: float = 60.0,
+        max_retry_attempts: Optional[int] = None,
+        initial_retry_delay: Optional[float] = None,
+        max_retry_delay: Optional[float] = None,
         backoff_multiplier: float = 2.0,
         health_check_interval: int = 60,
     ):
@@ -182,11 +183,16 @@ class ConnectionHealthService:
             backoff_multiplier: 백오프 배수
             health_check_interval: 헬스체크 간격 (초)
         """
-        self.max_retry_attempts = max_retry_attempts
-        self.initial_retry_delay = initial_retry_delay
-        self.max_retry_delay = max_retry_delay
+        settings = get_settings()
+        real_settings = settings.device_control.real
+        security_settings = settings.security.device_control
+
+        self.max_retry_attempts = max_retry_attempts or security_settings.max_retry_attempts
+        self.initial_retry_delay = initial_retry_delay if initial_retry_delay is not None else float(real_settings.retry_delay)
+        self.max_retry_delay = max_retry_delay if max_retry_delay is not None else float(real_settings.command_timeout * 2)
         self.backoff_multiplier = backoff_multiplier
         self.health_check_interval = health_check_interval
+        self._connection_timeout = float(real_settings.connection_timeout)
 
         self._connection_stats: Dict[str, ConnectionStats] = {}
         self._health_check_task: Optional[asyncio.Task] = None
@@ -328,7 +334,7 @@ class ConnectionHealthService:
         # 1. 네트워크 도달 가능성
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
+            sock.settimeout(self._connection_timeout)
             result = sock.connect_ex((ip, port))
             sock.close()
 
@@ -355,7 +361,7 @@ class ConnectionHealthService:
 
         # 2. HTTP 접근 가능성
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=self._connection_timeout) as client:
                 response = await client.get(f"http://{ip}:{port}/")
                 if response.status_code in (200, 301, 302, 401, 403):
                     diag.http_accessible = DiagnosticResult.PASS
@@ -372,7 +378,7 @@ class ConnectionHealthService:
         # 3. 인증 유효성
         if username and password:
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
+                async with httpx.AsyncClient(timeout=self._connection_timeout) as client:
                     # Digest Auth 시도
                     auth = httpx.DigestAuth(username, password)
                     response = await client.get(f"http://{ip}:{port}/", auth=auth)
@@ -396,7 +402,7 @@ class ConnectionHealthService:
         # 4. ONVIF 지원 여부
         if check_onvif:
             try:
-                async with httpx.AsyncClient(timeout=3) as client:
+                async with httpx.AsyncClient(timeout=self._connection_timeout) as client:
                     # ONVIF 서비스 URL 확인
                     response = await client.get(
                         f"http://{ip}:{port}/onvif/device_service",

@@ -348,6 +348,11 @@ class DeviceRegistry:
 
     async def _test_http_auth(self, device: RegisteredDevice) -> bool:
         """HTTP Digest 인증 테스트"""
+        if not device.username or not device.password:
+            return False
+        if not device.web_interface and device.manufacturer != "hanwha":
+            return False
+
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 auth = httpx.DigestAuth(device.username, device.password)
@@ -360,7 +365,7 @@ class DeviceRegistry:
                     )
                 else:
                     # 일반 HTTP 테스트
-                    response = await client.get(device.web_interface, auth=auth)
+                    response = await client.get(device.web_interface or f"http://{device.ip}", auth=auth)
 
                 return response.status_code == 200
 
@@ -387,7 +392,7 @@ class DeviceRegistry:
                             auth=auth
                         )
                         device.ptz_capable = response.status_code == 200
-                    except:
+                    except Exception:
                         pass
 
                     # 녹화 기능 확인
@@ -397,7 +402,7 @@ class DeviceRegistry:
                             auth=auth
                         )
                         device.recording_capable = response.status_code == 200
-                    except:
+                    except Exception:
                         pass
 
         except Exception as e:
@@ -544,7 +549,7 @@ class DeviceRegistry:
             return None
         return {
             "username": device.username,
-            "password": device.password,
+            "password": device.password or "",
         }
 
     async def update_credentials(

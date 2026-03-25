@@ -14,6 +14,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 from datetime import datetime
+from total_llm.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ class ZoneManager:
             storage_path: 존 데이터 저장 경로
         """
         if storage_path is None:
-            storage_path = Path(__file__).parent.parent.parent.parent / "data" / "device_registry"
+            storage_path = Path(get_settings().paths.data_path) / "device_registry"
 
         self._storage_path = storage_path
         self._zones_file = storage_path / "zones.json"
