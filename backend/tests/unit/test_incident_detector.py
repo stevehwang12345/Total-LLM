@@ -8,7 +8,7 @@ import pytest
 import sys
 sys.path.insert(0, '/home/sphwang/dev/Total-LLM/backend')
 
-from services.vision.detection.incident_detector import (
+from total_llm.services.vision.detection.incident_detector import (
     IncidentDetector,
     IncidentType,
     SeverityLevel

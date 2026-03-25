@@ -8,7 +8,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.api_generator import (
+from total_llm.services.api_generator import (
     DeviceAnalyzer,
     DocumentationParser,
     APISpecExtractor,
@@ -23,7 +23,7 @@ from services.api_generator import (
     Protocol,
     ExtractedAPI,
 )
-from services.api_generator.generators.base import ArtifactType, ArtifactStatus
+from total_llm.services.api_generator.generators.base import ArtifactType, ArtifactStatus
 
 
 # ========================================
@@ -369,7 +369,7 @@ class TestGeneratorAPI:
 
     def test_router_routes(self):
         """라우터 경로 테스트"""
-        from api.generator_api import router
+        from total_llm.api.generator_api import router
 
         routes = [r.path for r in router.routes]
 

@@ -12,11 +12,11 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import sys
 sys.path.insert(0, '/home/sphwang/dev/Total-LLM/backend')
 
-from services.control.system_controller import (
+from total_llm.services.control.system_controller import (
     SystemController,
     SystemControllerSync
 )
-from services.control.function_schemas import (
+from total_llm.services.control.function_schemas import (
     ACU_FUNCTIONS,
     CCTV_FUNCTIONS,
     SYSTEM_FUNCTIONS,

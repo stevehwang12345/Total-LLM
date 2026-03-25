@@ -2,12 +2,10 @@
 Integration Tests for Adaptive RAG System
 """
 
-import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent / "backend"))
 
-from core.complexity_analyzer import ComplexityAnalyzer
-from retrievers.adaptive_retriever import AdaptiveRetriever
+from total_llm.core.complexity_analyzer import ComplexityAnalyzer
+from total_llm.retrievers.adaptive_retriever import AdaptiveRetriever
 
 
 def test_complexity_analyzer():
@@ -44,7 +42,7 @@ def test_rag_tool():
     print("=" * 60)
 
     try:
-        from tools.rag_tool import RAGTool
+        from total_llm.tools.rag_tool import RAGTool
 
         tool = RAGTool()
 
@@ -144,7 +142,7 @@ def test_end_to_end():
 
     try:
         from openai import OpenAI
-        from retrievers.adaptive_retriever import AdaptiveRetriever
+        from total_llm.retrievers.adaptive_retriever import AdaptiveRetriever
 
         # 1. Retriever 초기화
         retriever = AdaptiveRetriever()

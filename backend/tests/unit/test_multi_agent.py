@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from agents.multi_agent import MultiAgentSystem, AgentState
+from total_llm.agents.multi_agent import MultiAgentSystem, AgentState
 
 
 class TestMultiAgentSystemInit:
@@ -376,7 +376,7 @@ class TestMultiAgentSingleton:
     @pytest.mark.asyncio
     async def test_get_multi_agent(self):
         """get_multi_agent 함수 테스트"""
-        import agents.multi_agent as agent_module
+        import total_llm.agents.multi_agent as agent_module
 
         # 싱글톤 초기화
         agent_module._multi_agent = None
@@ -387,7 +387,7 @@ class TestMultiAgentSingleton:
                 mock_agent_instance.initialize = AsyncMock()
 
                 with patch('agents.multi_agent.MultiAgentSystem', return_value=mock_agent_instance):
-                    from agents.multi_agent import get_multi_agent
+                    from total_llm.agents.multi_agent import get_multi_agent
 
                     agent1 = await get_multi_agent()
                     agent2 = await get_multi_agent()

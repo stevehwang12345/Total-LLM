@@ -10,7 +10,7 @@ from pathlib import Path
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
-from agents.mcp_agent_v2 import PromptEngineeringMCPAgent
+from total_llm.agents.mcp_agent_v2 import PromptEngineeringMCPAgent
 
 
 async def test_basic_math():

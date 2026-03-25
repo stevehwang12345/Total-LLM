@@ -34,6 +34,9 @@ RUN pip install --no-cache-dir \
 # Copy application code
 COPY . .
 
+# Install local package in src layout
+RUN pip install --no-cache-dir -e .
+
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs
 
@@ -50,4 +53,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:9002/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "9002"]
+CMD ["uvicorn", "total_llm.app:app", "--host", "0.0.0.0", "--port", "9002"]

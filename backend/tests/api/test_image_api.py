@@ -13,7 +13,7 @@ from pathlib import Path
 # 백엔드 경로 추가
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from api.image_api import router, _analysis_store, get_detector
+from total_llm.api.image_api import router, _analysis_store, get_detector
 from fastapi import FastAPI
 
 # 테스트용 FastAPI 앱 생성

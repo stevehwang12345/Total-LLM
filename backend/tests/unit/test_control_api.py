@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, '/home/sphwang/dev/Total-LLM/backend')
 
-from api.control_api import router, get_controller
+from total_llm.api.control_api import router, get_controller
 from fastapi import FastAPI
 
 

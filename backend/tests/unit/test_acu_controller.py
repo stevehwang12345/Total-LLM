@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, '/home/sphwang/dev/Total-LLM/backend')
 
-from services.control.acu_controller import (
+from total_llm.services.control.acu_controller import (
     ACUController,
     ACUControllerSync,
     DoorState,

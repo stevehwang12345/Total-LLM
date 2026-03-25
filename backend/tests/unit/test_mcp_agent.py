@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from agents.mcp_agent import MCPAgent
+from total_llm.agents.mcp_agent import MCPAgent
 
 
 class TestMCPAgentInit:
@@ -301,7 +301,7 @@ class TestMCPAgentSingleton:
     @pytest.mark.asyncio
     async def test_get_mcp_agent(self):
         """get_mcp_agent 함수 테스트"""
-        import agents.mcp_agent as agent_module
+        import total_llm.agents.mcp_agent as agent_module
 
         # 싱글톤 초기화
         agent_module._agent = None
@@ -313,7 +313,7 @@ class TestMCPAgentSingleton:
                 mock_agent_instance.initialize = AsyncMock()
 
                 with patch('agents.mcp_agent.MCPAgent', return_value=mock_agent_instance):
-                    from agents.mcp_agent import get_mcp_agent
+                    from total_llm.agents.mcp_agent import get_mcp_agent
 
                     agent1 = await get_mcp_agent()
                     agent2 = await get_mcp_agent()
